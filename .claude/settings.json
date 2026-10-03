@@ -1,0 +1,16 @@
+{
+  "_comment": "Every agent edit is immediately verified by .claude/hooks/check.sh: ruff --fix, then the pytest suite, then mypy. It is silent on a pass; on any failure it exits 2 with the output on stderr, which is what returns it to the model in the same turn (plain stdout on exit 0 never reaches the model).",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/check.sh"
+          }
+        ]
+      }
+    ]
+  }
+}

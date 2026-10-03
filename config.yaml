@@ -1,0 +1,9 @@
+# Single source of truth for run configuration. Validated by src/decision_model_eval/config.py.
+
+# Outside the repo; never committed.
+db_path: ~/.local/share/decision-model-eval/listings.db
+random_seed: 42
+
+# Keys into the registry in src/decision_model_eval/backends.py
+backends: [jev, haiku]
+labeler: opus

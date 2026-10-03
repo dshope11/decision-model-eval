@@ -14,6 +14,7 @@ import yaml
 
 from decision_model_eval.backends import BACKENDS
 
+# The checkout root under an editable install (pip install -e .), the supported setup.
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 

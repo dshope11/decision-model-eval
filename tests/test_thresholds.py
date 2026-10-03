@@ -24,6 +24,7 @@ import pytest
 
 from decision_model_eval.thresholds import (
     _report_at,
+    _threshold_at_tpr,
     scan_thresholds,
     select_threshold,
     weighted_counts,
@@ -101,6 +102,18 @@ def test_report_at_unweighted_rates_weighted_counts() -> None:
     assert report.fpr == pytest.approx(0.5)
     assert report.tp == pytest.approx(10.0)
     assert report.fp == pytest.approx(0.5)
+
+
+def test_tpr_match_reaches_points_inside_a_run_of_positives() -> None:
+    """The threshold grid is every distinct score, not roc_curve's thinned default.
+
+    Three positives in a row form a vertical run on the ROC curve; the default
+    thinning drops the middle point (threshold 0.8, TPR 2/3), and the match
+    would then land on 0.9 (TPR 1/3) instead.
+    """
+    scores = np.array([0.9, 0.8, 0.7, 0.1])
+    y = np.array([1, 1, 1, 0])
+    assert _threshold_at_tpr(scores, y, target_tpr=2 / 3) == pytest.approx(0.8)
 
 
 def test_objective_receives_split_totals() -> None:

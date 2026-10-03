@@ -16,6 +16,12 @@ biased, so that number is only ever reported as a labeled upper bound.
 
 The quantity being optimized is a pluggable :data:`Objective`. Counts are
 weighted (``w``); TPR and FPR are unweighted fractions.
+
+Every distinct score is a candidate threshold (``roc_curve`` with
+``drop_intermediate=False``). The default thinning drops points inside straight
+runs of the ROC curve, which is harmless with tens of thousands of thresholds
+but at a few hundred items moves a TPR match by a whole run, and the objective
+is an arbitrary callable, so no thinned point can be assumed suboptimal.
 """
 
 from __future__ import annotations
@@ -110,7 +116,7 @@ def select_threshold(
     untouched split.
     """
     pos_total, neg_total = _totals(y_sel, w_sel)
-    _, _, score_thresholds = roc_curve(y_sel, scores_sel)
+    _, _, score_thresholds = roc_curve(y_sel, scores_sel, drop_intermediate=False)
     values = np.array([
         objective(*weighted_counts(scores_sel, y_sel, w_sel, float(t)), pos_total, neg_total)
         for t in score_thresholds
@@ -120,7 +126,7 @@ def select_threshold(
 
 def _threshold_at_tpr(scores_sel: np.ndarray, y_sel: np.ndarray, target_tpr: float) -> float:
     """Score threshold whose selection-split TPR is closest to ``target_tpr``."""
-    _, tpr_vals, score_thresholds = roc_curve(y_sel, scores_sel)
+    _, tpr_vals, score_thresholds = roc_curve(y_sel, scores_sel, drop_intermediate=False)
     return float(score_thresholds[int(np.argmin(np.abs(tpr_vals - target_tpr)))])
 
 

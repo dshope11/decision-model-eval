@@ -1,11 +1,6 @@
-# Pinned versions - single source of truth for dependencies (pyproject.toml reads this file).
+# Runtime dependencies, exact pins - single source of truth (pyproject.toml reads this file).
+# Dev tooling lives in requirements-dev.txt.
 numpy==2.4.4
 scipy==1.17.1
 scikit-learn==1.8.0
 pyyaml==6.0.3
-
-# Dev tooling
-ruff==0.15.12
-mypy==1.20.2
-pytest==9.0.3
-types-PyYAML==6.0.12.20260408

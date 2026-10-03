@@ -13,12 +13,13 @@ scored against labels, and compared with a non-model baseline.
 | Decision | Choice | Reason |
 |---|---|---|
 | Backends under test | Jev 1.13 (`typesafe/jev-1.13`) and Claude Haiku 4.5, both through OpenRouter | One key, one credit pool, uniform telemetry; a purpose-built decision model vs a small general model |
-| Labeler | Claude Opus 5.5 through OpenRouter labels every item; a weekly blind human sample of ~30 measures its agreement | Full-volume labels from the strong model, corrected by a scale factor from the human control sample |
+| Labeler | Claude Opus 5.5 through OpenRouter is the reference labeler for the evaluated items; a weekly blind human sample of ~30 measures its agreement | Full-volume labels from the strong model, corrected by a scale factor from the human control sample |
 | Version pinning | Every model id pinned; no `-latest` aliases or routers | A measurement against a moving target is not reproducible. Enforced in `tests/test_backends.py` |
 | Provider pinning | OpenRouter provider pinned per backend and logged per call | Unpinned routing spreads one model id across providers with different feature support (some Bedrock endpoints for Opus 5.5 lack structured outputs) |
-| Probabilities | Haiku and Opus: per-option probabilities via strict JSON-schema structured output. Jev: its own typed-question endpoint | Jev returns calibrated probabilities natively; the general models must state them |
+| Probabilities | Haiku and Opus: per-option probabilities via strict JSON-schema structured output. Jev: its own typed-question endpoint | Jev returns per-option probabilities natively; the general models must state them. Whether either is calibrated is the question under test |
 | Listings store | SQLite, outside the repo, never committed | Holds scraped postings and private labels. `config.py` rejects a `db_path` inside the repo |
-| Threshold protocol | Select on one split, freeze, report on another; the oracle row is shown only as a labeled biased upper bound | An argmax over many thresholds rides upward fluctuations |
+| Threshold protocol | Select on one split, freeze, report on another; the oracle row is shown only as a labeled biased upper bound. Every distinct score is a candidate threshold | An argmax over many thresholds rides upward fluctuations; at a few hundred items, a thinned grid misplaces recall-matched points |
+| Working-point objective | An asymmetric cost: a missed good listing costs far more than one wasted full read | The two errors are not symmetric for the person acting on the decision |
 | Baselines | A non-model baseline (keyword rules) wherever one is natural; backends reported as a gain over it | A model result means little without the simple alternative beside it |
 | First result | SciFact claim verification as a public control set, before any live-pipeline result | Public, labeled, and very likely seen in training: a friendly control with a narrow claim |
 | In code, not in a model | Dedup, baseline diff, counting requirements, dates | Deterministic work is not a judgment |
@@ -44,8 +45,9 @@ decision-model-eval/
 ## Development
 
 ```bash
+conda create -n decision-model-eval python=3.12
 conda activate decision-model-eval
-pip install -e .
+pip install -e . -r requirements-dev.txt
 pytest
 ruff check src/ tests/
 mypy src/ tests/

@@ -12,11 +12,17 @@ requires-python = ">=3.12"
 # Dependencies live in requirements.txt (exact pins, single source of truth).
 dynamic = ["dependencies"]
 
+[project.scripts]
+dme = "decision_model_eval.cli:main"
+
 [tool.setuptools.dynamic]
 dependencies = { file = ["requirements.txt"] }
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+decision_model_eval = ["migrations/*.sql"]
 
 [tool.ruff]
 line-length = 100

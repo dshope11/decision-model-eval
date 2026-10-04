@@ -36,6 +36,14 @@ decision-model-eval/
     config.py                 <- EvalConfig dataclass + YAML loader (rejects unknown keys)
     stats.py                  <- clopper_pearson
     thresholds.py             <- frozen / oracle / baseline-matched threshold protocol
+    migrations/0001_init.sql  <- listings store schema; PRAGMA user_version tracks the version
+    store.py                  <- connect (foreign keys on, WAL), migrate, VACUUM INTO backups
+    ingest.py                 <- fetch-script JSONL -> runs, listings, snapshots, sightings
+    record.py                 <- decisions / labels / pipeline events JSONL
+    surfaced.py               <- what recent runs let through, with store ids, new vs seen
+    ats.py                    <- ATS identity (greenhouse / ashby / lever / waas) from a URL
+    jsonl.py                  <- strict JSONL reading and field validation
+    cli.py                    <- the `dme` command
   tests/                      <- pytest; one file per module
   .claude/hooks/check.sh      <- ruff + pytest + mypy after every agent edit
 ```
@@ -55,6 +63,25 @@ mypy src/ tests/
 
 `.claude/hooks/check.sh` runs all three after every Edit/Write and returns failures to
 the agent in the same turn.
+
+The store is driven by the `dme` command (`dme --help`): `init`, `ingest`, `surfaced`,
+`record`, `preselection add|list`, `backup`, `stats`. The JSONL formats it reads are
+specified in the docstrings of `ingest.py` and `record.py`.
+
+---
+
+## Listings store rules
+
+- **Capture is complete; anything derivable waits.** Adding a column is a new migration
+  file; data that was never captured cannot be recovered. Every fetched record is kept,
+  filter rejects included, with its verbatim source record.
+- **Never edit an applied migration.** Add `0002_...sql`. `store.migrations()` refuses gaps.
+- **Listing identity is per source and never merged.** Grouping one posting seen through
+  several sources is a later, separate layer built from the stored URLs and ATS ids.
+- **Ingest is atomic and idempotent** (one transaction per file, keyed by `run_uuid` /
+  `batch_uuid`), and bad input fails loudly before anything is written.
+- **A failed or partial run is recorded as such**, so a listing's absence only means
+  something when its run was `ok` and `complete`.
 
 ---
 

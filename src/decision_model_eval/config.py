@@ -25,6 +25,10 @@ class EvalConfig:
     # The listings database holds scraped postings and private labels. It lives
     # outside the repo and is never committed.
     db_path: str = "~/.local/share/decision-model-eval/listings.db"
+    # Consistent copies written by `dme backup` (and after every ingest). Point this
+    # at an off-site synced folder; never point db_path at one.
+    backup_dir: str = "~/.local/share/decision-model-eval/backups"
+    keep_backups: int = 8
     random_seed: int = 42
     backends: list[str] = field(default_factory=lambda: ["jev", "haiku"])
     labeler: str = "opus"
@@ -32,6 +36,12 @@ class EvalConfig:
     def __post_init__(self) -> None:
         if self.resolved_db_path().is_relative_to(REPO_ROOT):
             raise ValueError(f"db_path must be outside the repo ({REPO_ROOT}), got {self.db_path}")
+        if Path(self.backup_dir).expanduser().resolve().is_relative_to(REPO_ROOT):
+            raise ValueError(
+                f"backup_dir must be outside the repo ({REPO_ROOT}), got {self.backup_dir}"
+            )
+        if self.keep_backups < 1:
+            raise ValueError(f"keep_backups must be at least 1, got {self.keep_backups}")
 
         if self.random_seed < 0:
             raise ValueError(f"random_seed must be non-negative, got {self.random_seed}")

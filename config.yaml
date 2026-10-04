@@ -1,7 +1,11 @@
 # Single source of truth for run configuration. Validated by src/decision_model_eval/config.py.
 
-# Outside the repo; never committed.
+# Outside the repo; never committed. Never inside a synced folder either.
 db_path: ~/.local/share/decision-model-eval/listings.db
+# Consistent copies from `dme backup`, written after every ingest. Local until an
+# off-site target is chosen.
+backup_dir: ~/.local/share/decision-model-eval/backups
+keep_backups: 8
 random_seed: 42
 
 # Keys into the registry in src/decision_model_eval/backends.py

@@ -26,7 +26,7 @@ def ingested(conn: sqlite3.Connection, write_jsonl: WriteJsonl) -> sqlite3.Conne
 def decision(**overrides: Any) -> dict[str, Any]:
     record: dict[str, Any] = {
         "type": "decision", "listing": LISTING, "decision_point": "D1",
-        "backend": "claude-inline", "model": "claude-opus-5-5",
+        "backend": "claude-inline", "model": "claude-opus-5-5/effort=high",
         "output": {"read_full_jd": True, "tier": "High", "basis": "listing-line"},
     }
     record.update(overrides)
@@ -58,6 +58,22 @@ def test_listing_can_be_referenced_by_store_id(
     with pytest.raises(FormatError, match="no listing listing_id 999"):
         record_file(ingested, write_jsonl(
             {**BATCH, "batch_uuid": "batch-2"}, decision(listing={"listing_id": 999})))
+
+
+@pytest.mark.parametrize("model", [None, "claude-opus-5-5", "claude-opus-5-5/effort=extreme"])
+def test_inline_decision_must_record_its_effort_level(
+    ingested: sqlite3.Connection, write_jsonl: WriteJsonl, model: str | None
+) -> None:
+    with pytest.raises(FormatError, match="effort=<level>"):
+        record_file(ingested, write_jsonl(BATCH, decision(model=model)))
+
+
+def test_api_backend_decision_needs_no_effort_suffix(
+    ingested: sqlite3.Connection, write_jsonl: WriteJsonl
+) -> None:
+    record_file(ingested, write_jsonl(
+        BATCH, decision(backend="haiku", model="anthropic/claude-haiku-4.5")))
+    assert ingested.execute("SELECT COUNT(*) FROM decisions").fetchone()[0] == 1
 
 
 def test_rerecording_a_batch_is_a_no_op(

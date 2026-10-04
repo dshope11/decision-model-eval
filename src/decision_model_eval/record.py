@@ -20,10 +20,17 @@ the listing's latest snapshot (the content the decider saw) unless an explicit
      "sample", "rubric_version", "labeled_at", "note"}
     {"type": "event", "listing": ..., "event": str, "at": timestamp,
      optional: "channel", "drop_reason", "evidence", "note"}
+
+**Inline decisions carry their effort level.** For backend ``claude-inline`` (the
+judgments Claude makes inside a workflow session) the reasoning-effort setting is
+part of the backend's identity, like a pinned model version: ``model`` must be
+``"<model id>/effort=<level>"``, e.g. ``"claude-opus-5-5/effort=high"``. Without
+it, a run at a different effort level would silently mix into the baseline.
 """
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,6 +46,8 @@ _DECISION_OPTIONAL = {
     "confidence", "latency_ms", "tokens_in", "tokens_out", "cost_usd", "raw_response",
     "repeat_index", "created_at",
 }
+INLINE_BACKEND = "claude-inline"
+_INLINE_MODEL = re.compile(r"^[\w.-]+/effort=(low|medium|high|xhigh|max)$")
 _LABEL_REQUIRED = {"type", "listing", "decision_point", "labeler", "value", "saw_model_output"}
 _LABEL_OPTIONAL = {"snapshot_id", "sample", "rubric_version", "labeled_at", "note"}
 _EVENT_REQUIRED = {"type", "listing", "event", "at"}
@@ -143,6 +152,11 @@ def _optional_json(value: Any) -> str | None:
 def _decision(conn: sqlite3.Connection, batch_id: int | None, rec: dict[str, Any],
               line: int) -> None:
     jsonl.check_keys(rec, line, _DECISION_REQUIRED, _DECISION_OPTIONAL)
+    if rec["backend"] == INLINE_BACKEND and not _INLINE_MODEL.match(str(rec.get("model"))):
+        raise FormatError(
+            f"line {line}: {INLINE_BACKEND} decisions need model "
+            f"'<model id>/effort=<level>', got {rec.get('model')!r}"
+        )
     created_at = (
         jsonl.timestamp(rec["created_at"], line, "created_at")
         if rec.get("created_at") is not None else utc_now()

@@ -43,6 +43,7 @@ decision-model-eval/
     record.py                 <- decisions / labels / pipeline events JSONL
     surfaced.py               <- what recent runs let through, with store ids, new vs seen
     sample.py                 <- seeded blind label draws, the label sheet, sheet -> label records
+    view.py                   <- the listing view shown to labelers and triage alike
     ats.py                    <- ATS identity (greenhouse / ashby / lever / waas) from a URL
     jsonl.py                  <- strict JSONL reading and field validation
     cli.py                    <- the `dme` command
@@ -70,8 +71,11 @@ The store is driven by the `dme` command (`dme --help`): `init`, `ingest`, `surf
 `record`, `sample`, `label`, `preselection add|list`, `backup`, `stats`. The JSONL formats
 it reads are specified in the docstrings of `ingest.py` and `record.py`; the label-sheet
 format in `sample.py`. **Blind samples draw from everything the runs sighted, filter
-rejects included, and the sheet shows the listing line only** - never a tier, a filter
-verdict or any model output, which is what makes `saw_model_output: false` true.
+rejects included, and the sheet shows the listing view only** - never a tier, a filter
+verdict or any model output, which is what makes `saw_model_output: false` true. The
+view (`view.py`) is shared by the sheets and `dme surfaced`, so blind labels and
+inline triage decisions are made on the same fields; its version is part of the
+rubric version, and `dme record` requires inline decisions to name it.
 
 ---
 

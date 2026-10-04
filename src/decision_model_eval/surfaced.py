@@ -5,7 +5,8 @@ works from this list instead, so every inline judgment can be recorded against
 the listing it was made on (``"listing": {"listing_id": N}`` in a record file).
 Each listing appears once however many queries or emails surfaced it, and is
 marked new when no earlier run had ever sighted it - the baseline diff, done in
-code rather than by eye.
+code rather than by eye. Each listing is shown through ``view.listing_view``, the
+same view the blind label sheets use, so triage and labels see the same fields.
 """
 
 from __future__ import annotations
@@ -13,15 +14,15 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass
 
+from decision_model_eval.view import ListingView, listing_view
+
 
 @dataclass(frozen=True)
 class Surfaced:
     listing_id: int
     new: bool
     source: str
-    company: str | None
-    title: str | None
-    location: str | None
+    view: ListingView
     url: str | None
 
 
@@ -41,7 +42,7 @@ def surfaced(conn: sqlite3.Connection, ingested_since: str) -> list[Surfaced]:
             FROM sightings si JOIN run_queries q ON q.id = si.run_query_id
             WHERE q.run_id NOT IN (SELECT id FROM window_runs)
         )
-        SELECT l.id, l.source, l.url, sn.company_name_raw, sn.title, sn.location,
+        SELECT l.id, l.source, l.url, sn.id AS snapshot_id,
                l.id NOT IN (SELECT listing_id FROM earlier) AS is_new
         FROM hits h
         JOIN listings l ON l.id = h.listing_id
@@ -52,7 +53,6 @@ def surfaced(conn: sqlite3.Connection, ingested_since: str) -> list[Surfaced]:
     ).fetchall()
     return [
         Surfaced(listing_id=r["id"], new=bool(r["is_new"]), source=r["source"],
-                 company=r["company_name_raw"], title=r["title"], location=r["location"],
-                 url=r["url"])
+                 view=listing_view(conn, r["snapshot_id"]), url=r["url"])
         for r in rows
     ]

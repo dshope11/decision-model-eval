@@ -4,11 +4,14 @@
     dme ingest FILE [FILE ...]        load fetch-script JSONL, then back up
     dme surfaced --since TIMESTAMP    listings those runs let through, with store ids
     dme record FILE                   load decisions / labels / events JSONL
-    dme sample --since TIMESTAMP --name NAME --out SHEET [--size 30] [--seed N]
-               [--exclude SHEET ...] [--include-sampled]
+    dme sample --since TIMESTAMP [--until TIMESTAMP] --name NAME --out SHEET [--size 30]
+               [--seed N] [--exclude SHEET ...] [--include-sampled]
                                       seeded blind draw, written as a label sheet;
-                                      listings already labeled in a sample are skipped
-    dme label SHEET --labeler NAME    record a filled label sheet
+                                      listings already labeled in a sample, or on a
+                                      sheet beside SHEET, are skipped
+    dme label SHEET --labeler NAME [--rubric-version V]
+                                      record a filled label sheet; the rubric comes
+                                      from the sheet header when it has one
     dme preselection add NAME --config FILE --effective-from DATE [--note TEXT]
     dme preselection list
     dme backup                        write a consistent copy to backup_dir
@@ -36,12 +39,16 @@ from decision_model_eval.sample import (
     draw,
     parse_sheet,
     population,
+    resolve_rubric,
+    sample_name_used,
+    sheet_header,
     sheet_listing_ids,
     sheet_records,
     write_sheet,
 )
 from decision_model_eval.store import backup, connect, schema_version
 from decision_model_eval.surfaced import surfaced
+from decision_model_eval.view import VIEW_VERSION
 
 TABLES = (
     "preselection_versions", "runs", "run_queries", "companies", "listings", "snapshots",
@@ -77,11 +84,13 @@ def _surfaced(config: EvalConfig, args: argparse.Namespace) -> int:
     rows = surfaced(_open(config), timestamp(args.since, 0, "--since"))
     for row in rows:
         fields = [f"L{row.listing_id}", "NEW " if row.new else "seen", row.source,
-                  row.company or "?", row.title or "?", row.location or "?", row.url or ""]
+                  row.view.company, row.view.title, row.view.location,
+                  "; ".join(row.view.details), row.url or ""]
         print(" | ".join(fields))
     new = sum(row.new for row in rows)
     print(f"[{len(rows)} listings passed the script filters: {new} new, "
-          f"{len(rows) - new} seen in earlier runs]", file=sys.stderr)
+          f"{len(rows) - new} seen in earlier runs; listing view {VIEW_VERSION}]",
+          file=sys.stderr)
     return 0
 
 
@@ -96,6 +105,8 @@ def _record(config: EvalConfig, args: argparse.Namespace) -> int:
 
 
 QUESTIONS = {"D1": "Worth reading the full JD? (y / n)"}
+# The rubric a new sheet is labeled under: the question asked on listing view v2.
+RUBRICS = {"D1": f"d1-{VIEW_VERSION}"}
 
 
 def _sample(config: EvalConfig, args: argparse.Namespace) -> int:
@@ -106,16 +117,30 @@ def _sample(config: EvalConfig, args: argparse.Namespace) -> int:
         raise ValueError(f"no question defined for decision point {args.decision_point!r}")
     conn = _open(config)
     since = timestamp(args.since, 0, "--since")
+    until = timestamp(args.until, 0, "--until") if args.until else None
     seed = config.random_seed if args.seed is None else args.seed
-    pool = {lid for lid, _ in population(conn, since)}
-    exclude = set() if args.include_sampled else already_sampled(conn, args.decision_point)
+    # Sheets beside the new one count as drawn whether or not they are recorded yet,
+    # so drawing the next sheet before recording this one never repeats it.
+    siblings = {p: sheet_header(p) for p in out.parent.glob("*.txt")}
+    if sample_name_used(conn, args.name) or any(
+            h.get("sample") == args.name for h in siblings.values()):
+        raise ValueError(f"sample name {args.name!r} is already used; label batches "
+                         "are keyed on it, so a reused name would record nothing")
+    pool = {lid for lid, _ in population(conn, since, until)}
+    exclude: set[int] = set()
+    if not args.include_sampled:
+        exclude = already_sampled(conn, args.decision_point)
+        for path, header in siblings.items():
+            if header.get("decision_point") == args.decision_point:
+                exclude |= sheet_listing_ids(path)
     for sheet in args.exclude:
         exclude |= sheet_listing_ids(Path(sheet))
     excluded = len(pool & exclude)
-    items = draw(conn, since, args.size, seed, frozenset(exclude))
+    items = draw(conn, since, args.size, seed, frozenset(exclude), until)
     write_sheet(items, out, name=args.name, decision_point=args.decision_point,
+                rubric_version=RUBRICS[args.decision_point],
                 question=QUESTIONS[args.decision_point], since=since, seed=seed,
-                population_size=len(pool) - excluded, excluded=excluded)
+                population_size=len(pool) - excluded, excluded=excluded, until=until)
     print(f"{out}: {len(items)} listings drawn (seed {seed}, "
           f"{excluded} already sampled excluded)")
     return 0
@@ -125,7 +150,7 @@ def _label(config: EvalConfig, args: argparse.Namespace) -> int:
     sheet = Path(args.sheet)
     meta, entries = parse_sheet(sheet)
     records = sheet_records(meta, entries, labeler=args.labeler,
-                            rubric_version=args.rubric_version)
+                            rubric_version=resolve_rubric(meta, args.rubric_version))
     path = sheet.with_suffix(".labels.jsonl")
     path.write_text("".join(json.dumps(r) + "\n" for r in records))
     result = record_file(_open(config), path)
@@ -198,7 +223,11 @@ def build_parser() -> argparse.ArgumentParser:
     sample = commands.add_parser("sample", help="seeded blind draw as a label sheet")
     sample.add_argument("--since", required=True,
                         help="draw from runs ingested at or after this ISO 8601 UTC time")
-    sample.add_argument("--name", required=True, help="sample name, e.g. blind-2026-W40")
+    sample.add_argument("--until",
+                        help="and before this one - closes the window, so batches drawn "
+                             "after the next run is ingested still share a population")
+    sample.add_argument("--name", required=True,
+                        help="sample name, e.g. blind-2026-W40; must be new")
     sample.add_argument("--out", required=True, help="sheet to write; never overwritten")
     sample.add_argument("--size", type=int, default=30)
     sample.add_argument("--seed", type=int, help="defaults to random_seed in config.yaml")
@@ -207,13 +236,16 @@ def build_parser() -> argparse.ArgumentParser:
                         help="also exclude a sheet's listings (drawn, not yet labeled); "
                              "repeatable")
     sample.add_argument("--include-sampled", action="store_true",
-                        help="do not exclude listings already labeled in a sample")
+                        help="do not exclude listings already labeled in a sample or on "
+                             "a sheet beside --out")
     sample.set_defaults(run=_sample)
 
     label = commands.add_parser("label", help="record a filled label sheet")
     label.add_argument("sheet")
     label.add_argument("--labeler", required=True)
-    label.add_argument("--rubric-version")
+    label.add_argument("--rubric-version",
+                       help="for a sheet without a '# rubric_version:' header; an error "
+                            "if it contradicts the header")
     label.set_defaults(run=_label)
 
     preselection = commands.add_parser("preselection", help="search-config versions")

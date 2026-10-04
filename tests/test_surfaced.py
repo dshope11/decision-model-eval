@@ -30,7 +30,7 @@ def test_new_vs_seen_and_rejects_excluded(
         hit(source_key="3", passed_filter=False, filter_reason="not US or remote"),
     ), TONIGHT)
     rows = surfaced(conn, TONIGHT)
-    assert [(r.title, r.new) for r in rows] == [
+    assert [(r.view.title, r.new) for r in rows] == [
         ("Research Engineer", True),
         ("Software Engineer, Machine Learning Systems", False),
     ]

@@ -27,6 +27,7 @@ def decision(**overrides: Any) -> dict[str, Any]:
     record: dict[str, Any] = {
         "type": "decision", "listing": LISTING, "decision_point": "D1",
         "backend": "claude-inline", "model": "claude-opus-5-5/effort=high",
+        "input_payload": {"listing_view": "v2"},
         "output": {"read_full_jd": True, "tier": "High", "basis": "listing-line"},
     }
     record.update(overrides)
@@ -66,6 +67,14 @@ def test_inline_decision_must_record_its_effort_level(
 ) -> None:
     with pytest.raises(FormatError, match="effort=<level>"):
         record_file(ingested, write_jsonl(BATCH, decision(model=model)))
+
+
+@pytest.mark.parametrize("payload", [None, {}, {"listing_view": "2"}, ["v2"]])
+def test_inline_decision_must_name_its_listing_view(
+    ingested: sqlite3.Connection, write_jsonl: WriteJsonl, payload: Any
+) -> None:
+    with pytest.raises(FormatError, match="listing_view"):
+        record_file(ingested, write_jsonl(BATCH, decision(input_payload=payload)))
 
 
 def test_api_backend_decision_needs_no_effort_suffix(

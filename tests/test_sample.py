@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 from conftest import WriteJsonl, hit, run_header
 
+from decision_model_eval.cli import main
 from decision_model_eval.ingest import ingest_file
 from decision_model_eval.jsonl import FormatError
 from decision_model_eval.record import record_file
@@ -17,6 +18,9 @@ from decision_model_eval.sample import (
     draw,
     parse_sheet,
     population,
+    resolve_rubric,
+    sample_name_used,
+    sheet_header,
     sheet_listing_ids,
     sheet_records,
     write_sheet,
@@ -55,7 +59,8 @@ def fill(sheet: Path, answers: list[str]) -> None:
 def make_sheet(conn: sqlite3.Connection, path: Path, size: int = 3, seed: int = 7) -> Path:
     items = draw(conn, TONIGHT, size, seed)
     write_sheet(items, path, name="blind-2026-W40", decision_point="D1",
-                question="Worth reading the full JD? (y / n)", since=TONIGHT, seed=seed,
+                rubric_version="d1-v2", question="Worth reading the full JD? (y / n)",
+                since=TONIGHT, seed=seed,
                 population_size=len(population(conn, TONIGHT)))
     return path
 
@@ -100,13 +105,80 @@ def test_recorded_sample_labels_are_already_sampled(
     assert already_sampled(tonight, "D2") == set()
 
 
+def test_window_can_be_closed(tonight: sqlite3.Connection) -> None:
+    assert len(population(tonight, LAST_WEEK)) == 11
+    assert len(population(tonight, LAST_WEEK, TONIGHT)) == 1  # tonight's run left out
+
+
+def test_sample_name_is_used_once_recorded(
+    tonight: sqlite3.Connection, tmp_path: Path, write_jsonl: WriteJsonl,
+) -> None:
+    sheet = make_sheet(tonight, tmp_path / "sheet.txt")
+    assert not sample_name_used(tonight, "blind-2026-W40")
+    fill(sheet, ["y", "n", "n"])
+    meta, entries = parse_sheet(sheet)
+    record_file(tonight, write_jsonl(*sheet_records(meta, entries, labeler="david",
+                                                    rubric_version="d1-v2")))
+    assert sample_name_used(tonight, "blind-2026-W40")
+
+
+def test_sheet_header_reads_sheets_only(tonight: sqlite3.Connection, tmp_path: Path) -> None:
+    header = sheet_header(make_sheet(tonight, tmp_path / "sheet.txt"))
+    assert (header["sample"], header["decision_point"]) == ("blind-2026-W40", "D1")
+    other = tmp_path / "notes.txt"
+    other.write_text("# a heading: not a sheet\nbody\n")
+    assert sheet_header(other) == {}
+
+
+def test_rubric_comes_from_the_header_and_cannot_be_contradicted() -> None:
+    assert resolve_rubric({"rubric_version": "d1-v2"}, None) == "d1-v2"
+    assert resolve_rubric({"rubric_version": "d1-v2"}, "d1-v2") == "d1-v2"
+    assert resolve_rubric({}, "d1-v1") == "d1-v1"  # a sheet drawn before the header
+    with pytest.raises(ValueError, match="contradicts"):
+        resolve_rubric({"rubric_version": "d1-v2"}, "d1-v1")
+    with pytest.raises(ValueError, match="pass --rubric-version"):
+        resolve_rubric({}, None)
+
+
+def test_cli_draws_skip_unrecorded_sibling_sheets_and_refuse_reused_names(
+    tonight: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    tonight.commit()
+    config = tmp_path / "config.yaml"
+    config.write_text(f"db_path: {tmp_path / 'store' / 'listings.db'}\n"
+                      f"backup_dir: {tmp_path / 'backups'}\n")
+    samples = tmp_path / "samples"
+    samples.mkdir()
+
+    def sample(name: str, out: str) -> int:
+        return main(["--config", str(config), "sample", "--since", TONIGHT, "--name", name,
+                     "--out", str(samples / out), "--size", "5"])
+
+    assert sample("a", "a.txt") == 0
+    assert sample("b", "b.txt") == 0  # "a" is not recorded, but it sits beside "b"
+    a, b = sheet_listing_ids(samples / "a.txt"), sheet_listing_ids(samples / "b.txt")
+    assert len(a) == len(b) == 5 and a.isdisjoint(b)
+    assert "5 already sampled excluded" in (samples / "b.txt").read_text()
+    assert sample("a", "a2.txt") == 1  # the name is taken by a sheet on disk
+    assert not (samples / "a2.txt").exists()
+    assert sample("c", "c.txt") == 1  # all 10 listings are on a sheet already
+
+
 def test_sheet_shows_the_listing_line_and_nothing_else(
     tonight: sqlite3.Connection, tmp_path: Path,
 ) -> None:
     text = make_sheet(tonight, tmp_path / "sheet.txt").read_text()
     assert "WindBorne Systems :: Role" in text
+    assert "    work: ? | level: ?" in text  # the view's details line
     assert "not US or remote" not in text  # no filter verdict on the sheet
     assert "# sample: blind-2026-W40" in text
+    meta, _ = parse_sheet(fill_all(tmp_path / "sheet.txt"))
+    assert meta["rubric_version"] == "d1-v2"
+
+
+def fill_all(sheet: Path) -> Path:
+    fill(sheet, ["n"] * sum(line.strip() == "D1:" for line in sheet.read_text().splitlines()))
+    return sheet
 
 
 def test_filled_sheet_records_blind_labels_once(

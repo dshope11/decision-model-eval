@@ -26,6 +26,12 @@ judgments Claude makes inside a workflow session) the reasoning-effort setting i
 part of the backend's identity, like a pinned model version: ``model`` must be
 ``"<model id>/effort=<level>"``, e.g. ``"claude-opus-5-5/effort=high"``. Without
 it, a run at a different effort level would silently mix into the baseline.
+
+**Inline decisions also name the listing view they were made on**, as
+``"input_payload": {"listing_view": "v2"}`` - the version ``dme surfaced`` prints.
+Blind labels record theirs as the rubric version, and agreement is only measured
+between judgments made on the same information. Batches recorded before the
+requirement (the 2026-10-03 run, view v1) carry none.
 """
 
 from __future__ import annotations
@@ -48,6 +54,7 @@ _DECISION_OPTIONAL = {
 }
 INLINE_BACKEND = "claude-inline"
 _INLINE_MODEL = re.compile(r"^[\w.-]+/effort=(low|medium|high|xhigh|max)$")
+_LISTING_VIEW = re.compile(r"^v\d+$")
 _LABEL_REQUIRED = {"type", "listing", "decision_point", "labeler", "value", "saw_model_output"}
 _LABEL_OPTIONAL = {"snapshot_id", "sample", "rubric_version", "labeled_at", "note"}
 _EVENT_REQUIRED = {"type", "listing", "event", "at"}
@@ -157,6 +164,14 @@ def _decision(conn: sqlite3.Connection, batch_id: int | None, rec: dict[str, Any
             f"line {line}: {INLINE_BACKEND} decisions need model "
             f"'<model id>/effort=<level>', got {rec.get('model')!r}"
         )
+    if rec["backend"] == INLINE_BACKEND:
+        payload = rec.get("input_payload")
+        view = payload.get("listing_view") if isinstance(payload, dict) else None
+        if not _LISTING_VIEW.match(str(view)):
+            raise FormatError(
+                f"line {line}: {INLINE_BACKEND} decisions need input_payload "
+                f"{{\"listing_view\": \"v<N>\"}}, got {payload!r}"
+            )
     created_at = (
         jsonl.timestamp(rec["created_at"], line, "created_at")
         if rec.get("created_at") is not None else utc_now()

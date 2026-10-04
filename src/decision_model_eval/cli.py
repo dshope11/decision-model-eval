@@ -4,6 +4,9 @@
     dme ingest FILE [FILE ...]        load fetch-script JSONL, then back up
     dme surfaced --since TIMESTAMP    listings those runs let through, with store ids
     dme record FILE                   load decisions / labels / events JSONL
+    dme sample --since TIMESTAMP --name NAME --out SHEET [--size 30] [--seed N]
+                                      seeded blind draw, written as a label sheet
+    dme label SHEET --labeler NAME    record a filled label sheet
     dme preselection add NAME --config FILE --effective-from DATE [--note TEXT]
     dme preselection list
     dme backup                        write a consistent copy to backup_dir
@@ -26,6 +29,7 @@ from decision_model_eval.config import REPO_ROOT, EvalConfig, load_config
 from decision_model_eval.ingest import ingest_file
 from decision_model_eval.jsonl import FormatError, timestamp
 from decision_model_eval.record import record_file
+from decision_model_eval.sample import draw, parse_sheet, population, sheet_records, write_sheet
 from decision_model_eval.store import backup, connect, schema_version
 from decision_model_eval.surfaced import surfaced
 
@@ -78,6 +82,42 @@ def _record(config: EvalConfig, args: argparse.Namespace) -> int:
     else:
         print(f"{args.file}: {result.decisions} decisions, {result.labels} labels, "
               f"{result.events} events")
+    return 0
+
+
+QUESTIONS = {"D1": "Worth reading the full JD? (y / n)"}
+
+
+def _sample(config: EvalConfig, args: argparse.Namespace) -> int:
+    out = Path(args.out)
+    if out.exists():
+        raise ValueError(f"{out} exists; a drawn sheet is never overwritten")
+    if args.decision_point not in QUESTIONS:
+        raise ValueError(f"no question defined for decision point {args.decision_point!r}")
+    conn = _open(config)
+    since = timestamp(args.since, 0, "--since")
+    seed = config.random_seed if args.seed is None else args.seed
+    items = draw(conn, since, args.size, seed)
+    write_sheet(items, out, name=args.name, decision_point=args.decision_point,
+                question=QUESTIONS[args.decision_point], since=since, seed=seed,
+                population_size=len(population(conn, since)))
+    print(f"{out}: {len(items)} listings drawn (seed {seed})")
+    return 0
+
+
+def _label(config: EvalConfig, args: argparse.Namespace) -> int:
+    sheet = Path(args.sheet)
+    meta, entries = parse_sheet(sheet)
+    records = sheet_records(meta, entries, labeler=args.labeler,
+                            rubric_version=args.rubric_version)
+    path = sheet.with_suffix(".labels.jsonl")
+    path.write_text("".join(json.dumps(r) + "\n" for r in records))
+    result = record_file(_open(config), path)
+    if result.already_recorded:
+        print(f"{sheet}: already recorded (batch {result.batch_uuid}) - skipped")
+    else:
+        yes = sum(e.answer for e in entries)
+        print(f"{sheet}: {result.labels} labels recorded ({yes} y, {len(entries) - yes} n)")
     return 0
 
 
@@ -138,6 +178,22 @@ def build_parser() -> argparse.ArgumentParser:
     record = commands.add_parser("record", help="load decisions / labels / events JSONL")
     record.add_argument("file")
     record.set_defaults(run=_record)
+
+    sample = commands.add_parser("sample", help="seeded blind draw as a label sheet")
+    sample.add_argument("--since", required=True,
+                        help="draw from runs ingested at or after this ISO 8601 UTC time")
+    sample.add_argument("--name", required=True, help="sample name, e.g. blind-2026-W40")
+    sample.add_argument("--out", required=True, help="sheet to write; never overwritten")
+    sample.add_argument("--size", type=int, default=30)
+    sample.add_argument("--seed", type=int, help="defaults to random_seed in config.yaml")
+    sample.add_argument("--decision-point", default="D1")
+    sample.set_defaults(run=_sample)
+
+    label = commands.add_parser("label", help="record a filled label sheet")
+    label.add_argument("sheet")
+    label.add_argument("--labeler", required=True)
+    label.add_argument("--rubric-version")
+    label.set_defaults(run=_label)
 
     preselection = commands.add_parser("preselection", help="search-config versions")
     actions = preselection.add_subparsers(dest="action", required=True)

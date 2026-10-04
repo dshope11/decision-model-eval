@@ -42,6 +42,7 @@ decision-model-eval/
     ingest.py                 <- fetch-script JSONL -> runs, listings, snapshots, sightings
     record.py                 <- decisions / labels / pipeline events JSONL
     surfaced.py               <- what recent runs let through, with store ids, new vs seen
+    sample.py                 <- seeded blind label draws, the label sheet, sheet -> label records
     ats.py                    <- ATS identity (greenhouse / ashby / lever / waas) from a URL
     jsonl.py                  <- strict JSONL reading and field validation
     cli.py                    <- the `dme` command
@@ -66,8 +67,11 @@ mypy src/ tests/
 the agent in the same turn.
 
 The store is driven by the `dme` command (`dme --help`): `init`, `ingest`, `surfaced`,
-`record`, `preselection add|list`, `backup`, `stats`. The JSONL formats it reads are
-specified in the docstrings of `ingest.py` and `record.py`.
+`record`, `sample`, `label`, `preselection add|list`, `backup`, `stats`. The JSONL formats
+it reads are specified in the docstrings of `ingest.py` and `record.py`; the label-sheet
+format in `sample.py`. **Blind samples draw from everything the runs sighted, filter
+rejects included, and the sheet shows the listing line only** - never a tier, a filter
+verdict or any model output, which is what makes `saw_model_output: false` true.
 
 ---
 

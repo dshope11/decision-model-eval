@@ -5,7 +5,9 @@
     dme surfaced --since TIMESTAMP    listings those runs let through, with store ids
     dme record FILE                   load decisions / labels / events JSONL
     dme sample --since TIMESTAMP --name NAME --out SHEET [--size 30] [--seed N]
-                                      seeded blind draw, written as a label sheet
+               [--exclude SHEET ...] [--include-sampled]
+                                      seeded blind draw, written as a label sheet;
+                                      listings already labeled in a sample are skipped
     dme label SHEET --labeler NAME    record a filled label sheet
     dme preselection add NAME --config FILE --effective-from DATE [--note TEXT]
     dme preselection list
@@ -29,7 +31,15 @@ from decision_model_eval.config import REPO_ROOT, EvalConfig, load_config
 from decision_model_eval.ingest import ingest_file
 from decision_model_eval.jsonl import FormatError, timestamp
 from decision_model_eval.record import record_file
-from decision_model_eval.sample import draw, parse_sheet, population, sheet_records, write_sheet
+from decision_model_eval.sample import (
+    already_sampled,
+    draw,
+    parse_sheet,
+    population,
+    sheet_listing_ids,
+    sheet_records,
+    write_sheet,
+)
 from decision_model_eval.store import backup, connect, schema_version
 from decision_model_eval.surfaced import surfaced
 
@@ -97,11 +107,17 @@ def _sample(config: EvalConfig, args: argparse.Namespace) -> int:
     conn = _open(config)
     since = timestamp(args.since, 0, "--since")
     seed = config.random_seed if args.seed is None else args.seed
-    items = draw(conn, since, args.size, seed)
+    pool = {lid for lid, _ in population(conn, since)}
+    exclude = set() if args.include_sampled else already_sampled(conn, args.decision_point)
+    for sheet in args.exclude:
+        exclude |= sheet_listing_ids(Path(sheet))
+    excluded = len(pool & exclude)
+    items = draw(conn, since, args.size, seed, frozenset(exclude))
     write_sheet(items, out, name=args.name, decision_point=args.decision_point,
                 question=QUESTIONS[args.decision_point], since=since, seed=seed,
-                population_size=len(population(conn, since)))
-    print(f"{out}: {len(items)} listings drawn (seed {seed})")
+                population_size=len(pool) - excluded, excluded=excluded)
+    print(f"{out}: {len(items)} listings drawn (seed {seed}, "
+          f"{excluded} already sampled excluded)")
     return 0
 
 
@@ -187,6 +203,11 @@ def build_parser() -> argparse.ArgumentParser:
     sample.add_argument("--size", type=int, default=30)
     sample.add_argument("--seed", type=int, help="defaults to random_seed in config.yaml")
     sample.add_argument("--decision-point", default="D1")
+    sample.add_argument("--exclude", action="append", default=[], metavar="SHEET",
+                        help="also exclude a sheet's listings (drawn, not yet labeled); "
+                             "repeatable")
+    sample.add_argument("--include-sampled", action="store_true",
+                        help="do not exclude listings already labeled in a sample")
     sample.set_defaults(run=_sample)
 
     label = commands.add_parser("label", help="record a filled label sheet")

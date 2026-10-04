@@ -13,9 +13,11 @@ from decision_model_eval.ingest import ingest_file
 from decision_model_eval.jsonl import FormatError
 from decision_model_eval.record import record_file
 from decision_model_eval.sample import (
+    already_sampled,
     draw,
     parse_sheet,
     population,
+    sheet_listing_ids,
     sheet_records,
     write_sheet,
 )
@@ -74,6 +76,28 @@ def test_draw_is_reproducible_from_the_seed(tonight: sqlite3.Connection) -> None
 def test_draw_larger_than_population_is_refused(tonight: sqlite3.Connection) -> None:
     with pytest.raises(ValueError, match="exceeds the population"):
         draw(tonight, TONIGHT, 11, seed=42)
+
+
+def test_draw_skips_excluded_listings(tonight: sqlite3.Connection) -> None:
+    first = {item.listing_id for item in draw(tonight, TONIGHT, 6, seed=42)}
+    second = draw(tonight, TONIGHT, 4, seed=42, exclude=frozenset(first))
+    assert first.isdisjoint(item.listing_id for item in second)
+    with pytest.raises(ValueError, match="exceeds the population of 4"):
+        draw(tonight, TONIGHT, 5, seed=42, exclude=frozenset(first))
+
+
+def test_recorded_sample_labels_are_already_sampled(
+    tonight: sqlite3.Connection, tmp_path: Path, write_jsonl: WriteJsonl,
+) -> None:
+    sheet = make_sheet(tonight, tmp_path / "sheet.txt")
+    assert already_sampled(tonight, "D1") == set()
+    assert len(sheet_listing_ids(sheet)) == 3  # readable before it is answered
+    fill(sheet, ["y", "n", "n"])
+    meta, entries = parse_sheet(sheet)
+    record_file(tonight, write_jsonl(*sheet_records(meta, entries, labeler="david",
+                                                    rubric_version="d1-v1")))
+    assert already_sampled(tonight, "D1") == sheet_listing_ids(sheet)
+    assert already_sampled(tonight, "D2") == set()
 
 
 def test_sheet_shows_the_listing_line_and_nothing_else(

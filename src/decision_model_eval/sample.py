@@ -75,11 +75,36 @@ def population(conn: sqlite3.Connection, ingested_since: str) -> list[tuple[int,
     return [(int(r["listing_id"]), int(r["snapshot_id"])) for r in rows]
 
 
+def already_sampled(conn: sqlite3.Connection, decision_point: str) -> set[int]:
+    """Listing ids that already carry a label from a sample at ``decision_point``."""
+    rows = conn.execute(
+        """
+        SELECT DISTINCT sn.listing_id
+        FROM labels la JOIN snapshots sn ON sn.id = la.snapshot_id
+        WHERE la.sample IS NOT NULL AND la.decision_point = ?
+        """,
+        (decision_point,),
+    ).fetchall()
+    return {int(r["listing_id"]) for r in rows}
+
+
+def sheet_listing_ids(path: Path) -> set[int]:
+    """Listing ids on a sheet, answered or not - for sheets drawn but not yet recorded."""
+    ids = set()
+    for line in path.read_text().splitlines():
+        match = _ENTRY.match(line.strip())
+        if match:
+            ids.add(int(match.group(2)))
+    return ids
+
+
 def draw(conn: sqlite3.Connection, ingested_since: str, size: int,
-         seed: int) -> list[SampleItem]:
+         seed: int, exclude: frozenset[int] = frozenset()) -> list[SampleItem]:
     """A seeded simple random sample of ``size`` listings from ``population``,
-    in drawn order. The same store, window, size and seed give the same draw."""
-    pool = population(conn, ingested_since)
+    less the ``exclude`` listing ids, in drawn order. The same store, window, size,
+    seed and exclusions give the same draw. Successive draws that each exclude the
+    earlier ones add up to one simple random sample without replacement."""
+    pool = [p for p in population(conn, ingested_since) if p[0] not in exclude]
     if size > len(pool):
         raise ValueError(f"sample size {size} exceeds the population of {len(pool)}")
     picked = random.Random(seed).sample(pool, size)
@@ -96,13 +121,17 @@ def _listing_line(conn: sqlite3.Connection, snapshot_id: int) -> str:
 
 
 def write_sheet(items: list[SampleItem], path: Path, *, name: str, decision_point: str,
-                question: str, since: str, seed: int, population_size: int) -> None:
+                question: str, since: str, seed: int, population_size: int,
+                excluded: int = 0) -> None:
+    drawn = (f"# drawn: {len(items)} of {population_size} listings sighted by runs "
+             f"ingested since {since}, seed {seed}")
+    if excluded:
+        drawn += f", {excluded} already sampled excluded"
     header = [
         f"# sample: {name}",
         f"# decision_point: {decision_point}",
         f"# question: {question}",
-        f"# drawn: {len(items)} of {population_size} listings sighted by runs "
-        f"ingested since {since}, seed {seed}",
+        drawn,
         f"# Answer y or n after each '{decision_point}:'; 'note:' is optional.",
         "# Label from the line alone - no JD, no model output.",
         "",

@@ -24,7 +24,9 @@ Sheet format (plain text, edited in any editor)::
         D1:
         note:
 
-The answer goes after ``D1:`` (``y`` or ``n``); ``note:`` is optional.
+The answer goes after ``D1:`` (``y`` or ``n``, with a trailing ``?`` for an unsure
+call); ``note:`` is optional. Every line below the answer is kept in the recorded
+note, so tags such as ``explore: ...`` survive; an unsure call adds ``unsure``.
 """
 
 from __future__ import annotations
@@ -192,8 +194,9 @@ def parse_sheet(path: Path) -> tuple[dict[str, str], list[SheetEntry]]:
         if current.get("answer") is None:
             missing.append(f"[{current['k']}]")
         else:
+            parts = (["unsure"] if current.get("unsure") else []) + current["notes"]
             entries.append(SheetEntry(current["listing_id"], current["snapshot_id"],
-                                      current["answer"], current.get("note")))
+                                      current["answer"], "; ".join(parts) or None))
 
     for number, raw in enumerate(path.read_text().splitlines(), start=1):
         line = raw.strip()
@@ -206,19 +209,26 @@ def parse_sheet(path: Path) -> tuple[dict[str, str], list[SheetEntry]]:
         if match:
             close()
             current = {"k": match.group(1), "listing_id": int(match.group(2)),
-                       "snapshot_id": int(match.group(3))}
+                       "snapshot_id": int(match.group(3)), "notes": [], "answered": False}
             continue
         if current is None or not line:
             continue
         point = meta.get("decision_point", "")
         if point and line.startswith(f"{point}:"):
+            current["answered"] = True
             value = line[len(point) + 1:].strip().lower()
+            if value.endswith("?"):  # a trailing ? marks an unsure call
+                current["unsure"], value = True, value[:-1].strip()
             if value:
                 if value not in _ANSWERS:
                     raise FormatError(f"{path}:{number}: answer must be y or n, got {value!r}")
                 current["answer"] = _ANSWERS[value]
-        elif line.startswith("note:"):
-            current["note"] = line[len("note:"):].strip() or None
+        elif current["answered"]:
+            # Everything the labeler wrote below the answer is kept: note: is stored
+            # bare, any other line (explore: ...) verbatim.
+            text = line[len("note:"):].strip() if line.startswith("note:") else line
+            if text:
+                current["notes"].append(text)
     close()
     for key in ("sample", "decision_point"):
         if key not in meta:

@@ -225,3 +225,20 @@ def test_answer_other_than_y_or_n_is_an_error(
     fill(sheet, ["y", "maybe", "n"])
     with pytest.raises(FormatError, match="must be y or n"):
         parse_sheet(sheet)
+
+
+def test_unsure_marks_and_lines_below_the_answer_are_kept(
+    tonight: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    sheet = make_sheet(tonight, tmp_path / "sheet.txt")
+    fill(sheet, ["y?", "n", "N ?"])
+    text = sheet.read_text().replace(
+        "    D1: n\n    note:", "    D1: n\n    note: location\n    explore: what is a GTM role", 1)
+    sheet.write_text(text.replace("    D1: y?\n    note:", "    D1: y?\n    note:\n"
+                                  "    explore on this role", 1))
+    _, entries = parse_sheet(sheet)
+    assert [(e.answer, e.note) for e in entries] == [
+        (True, "unsure; explore on this role"),
+        (False, "location; explore: what is a GTM role"),
+        (False, "unsure"),
+    ]

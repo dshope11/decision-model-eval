@@ -47,6 +47,9 @@ decision-model-eval/
     ats.py                    <- ATS identity (greenhouse / ashby / lever / waas) from a URL
     jsonl.py                  <- strict JSONL reading and field validation
     cli.py                    <- the `dme` command
+  scripts/                    <- interim stand-alone helpers, until dme label reads D2/D5:
+    build_d2_sheet.py         <-   the stage-2 (D2 + D5) sheet from a recorded D1 sheet
+    jd_to_text.py             <-   a fetched non-WaaS JD (iCIMS / SmartRecruiters) -> plain text
   tests/                      <- pytest; one file per module
   .claude/hooks/check.sh      <- ruff + pytest + mypy after every agent edit
 ```

@@ -1,6 +1,7 @@
-"""Turn a fetched JD (iCIMS page with ld+json, or SmartRecruiters posting JSON) into plain text.
+"""Turn a fetched JD (iCIMS page with ld+json, or SmartRecruiters / Greenhouse / Ashby posting
+JSON) into plain text. For Ashby, IN_FILE is the one job object from the posting API's board.
 
-Usage: python3 -I jd_to_text.py icims|smartrecruiters IN_FILE OUT_FILE URL FETCHED_DATE
+Usage: python3 -I jd_to_text.py icims|smartrecruiters|greenhouse|ashby IN_FILE OUT_FILE URL FETCHED_DATE
 
 The raw response stays in jd/raw/ so the text can be regenerated after the posting is gone.
 """
@@ -48,6 +49,14 @@ def main():
         d = json.loads(block)
         head = f"{d.get('title')}"
         body = to_text(d["description"])
+    elif kind == "greenhouse":
+        d = json.loads(raw)
+        head = f"{d.get('title')} :: {d.get('location', {}).get('name')}"
+        body = to_text(d["content"])
+    elif kind == "ashby":
+        d = json.loads(raw)
+        head = f"{d.get('title')} :: {d.get('location')}"
+        body = to_text(d["descriptionHtml"])
     else:
         d = json.loads(raw)
         head = f"{d.get('name')} :: {d.get('location', {}).get('fullLocation')}"

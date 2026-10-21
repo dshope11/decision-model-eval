@@ -61,7 +61,7 @@ decision-model-eval/
                                    Ashby) -> plain text
     reveal_d1.py              <-   a recorded blind sample's D1 labels against the pipeline's call
                                  (the stage-2 sheet builder lives with the private label sheets)
-  results/scifact-m4-dev/     <- the control run's aggregate report, copied from its run dir;
+  results/scifact/            <- the control run's aggregate report, copied from its run dir;
                                  never items.jsonl or the decision logs (per-item model outputs)
   tests/                      <- pytest; one file per module
   .claude/hooks/check.sh      <- ruff + pytest + mypy after every agent edit

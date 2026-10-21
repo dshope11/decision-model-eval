@@ -4,13 +4,13 @@
 
 Decision models answer a typed question (yes/no, a choice, a score) with a probability for every option, and TypeSafe sells its decision model, Jev, as calibrated: *"higher confidence means higher accuracy."* If that holds, a workflow can set its working point, the confidence above which it acts without a human, straight from the stated probability and the cost of an error. If it doesn't, the working point has to be measured on labeled data from the workflow itself.
 
-Two independent evaluations have already checked the claim on benchmarks, and both found that calibration depends on the task ([Prior work](#prior-work)). This project asks the question a team adopting one of these models would ask: **on my own decisions, can I take the stated probability at its word, or do I still have to measure the working point?** It measures that at the judgment points of a live agentic workflow, the author's own job-search pipeline, against blind human labels and a non-model baseline. A public control set runs on the same backends, so the shift from benchmark to live data is measured rather than assumed.
+Two independent evaluations have already checked the claim on benchmarks, and both found that calibration depends on the task ([Prior work](#prior-work)). This project asks the question a team adopting one of these models would ask: **on my own decisions, can I take the stated probability at its word, or do I still have to measure the working point?** It measures that at the judgment points of a live agentic workflow, the author's own job-search pipeline, against blind human labels and a keyword-rule baseline. A public control set runs on the same backends, so the shift from benchmark to live data is measured rather than assumed.
 
-**Status (2026-10-21).** The control result is in: [SciFact](#first-result-the-scifact-control-run), 339 claim-verification pairs, Jev against Claude Haiku 5.5. The live measurement is [being collected](#the-live-measurement-in-progress). The data capture, the blind weekly labels and the decision client are built, and the shadow runs and the analysis come next.
+**Status (2026-10-21).** The control result is in: [SciFact](#first-result-the-scifact-control-run), 339 claim-verification pairs, Jev against Claude Haiku 5.5. The live measurement is [being collected](#the-live-measurement-in-progress). The data capture, the blind weekly labels and the decision client are built. Next, the backends answer the same questions as the live pipeline, beside it and without steering it, and then comes the analysis.
 
 **What this demonstrates:**
 
-- **Evaluation design for model-driven decisions** - a control set before the live result, labels made blind to model output, working points selected on one split and reported on another, and the biased "oracle" number shown only as a labeled upper bound.
+- **Evaluation design for model-driven decisions** - a control set before the live result, labels made blind to model output, and working points tuned on one half of the data and scored on the other, since a threshold scored on the data that tuned it looks better than it is. That flattering "oracle" number is shown only as a labeled upper bound.
 - **Calibration measured with honest uncertainties** - reliability diagrams with Clopper-Pearson intervals, a proper scoring rule beside binned error, a simulated noise floor for that error, and utility at a stated error cost.
 - **A reproducible model-call harness** - pinned model versions and reasoning effort, pinned serving providers, one logged and replayable record per call, and hashed question wording, so an analysis refuses to mix versions.
 - **Data capture for a live workflow** - a SQLite store that keeps every fetched record, filter rejects included, with the search configuration versioned.
@@ -22,7 +22,7 @@ Two independent evaluations have already checked the claim on benchmarks, and bo
 
 ## Prior work
 
-- **vals.ai, [An Independent Evaluation of TypeSafe's Jev](https://www.vals.ai/blogs/independent-evaluation-of-jev) (2026-10-06).** Twelve systems, Jev 1.13.0 among them. Jev's expected calibration error (ECE) was 0.011 on 400 claim-verification items built from recent 10-K filings, the lowest of the twelve, and 0.108 on a 396-question LegalBench slice, the highest. The post notes that part of that rise is mechanical, since error grows as accuracy falls. Its routing test uses the threshold protocol used here: each threshold is set on the first 30% of items to meet a 1% error budget, frozen, and applied to the other 70%. Six of the twelve systems went over budget, Jev among them (95% of cases automated at 1.6% error).
+- **vals.ai, [An Independent Evaluation of TypeSafe's Jev](https://www.vals.ai/blogs/independent-evaluation-of-jev) (2026-10-06).** Twelve systems, Jev 1.13.0 among them. Jev's expected calibration error (ECE), the average gap between stated probability and observed accuracy, was 0.011 (about one point) on 400 claim-verification items built from recent 10-K filings, the lowest of the twelve, and 0.108 on a 396-question LegalBench slice, the highest. The post notes that part of that rise is mechanical, since error grows as accuracy falls. Its routing test uses the threshold protocol used here: each threshold is set on the first 30% of items to meet a 1% error budget, frozen, and applied to the other 70%. Six of the twelve systems went over budget, Jev among them (95% of cases automated at 1.6% error).
 - **Artificial Analysis, [Decision Index v1.0](https://artificialanalysis.ai/articles/artificial-analysis-decision-index) (2026-10-13).** Across almost all probability levels, accuracy falls below the stated probability for every decision model on the index, driven by the knowledge and reasoning tasks. Most of the models are relatively well calibrated on tool calling and classification.
 - **TypeSafe's own operating docs** ([Confidence](https://docs.typesafe.ai/confidence.md)) already say to measure the working point: *"The correct threshold values depend on your domain and the performance of the model for your use case. Start with conservative thresholds, test with your own data, and adjust as you observe results."* The calibration claim is in the launch post, not in the docs.
 
@@ -57,27 +57,33 @@ Two independent evaluations have already checked the claim on benchmarks, and bo
 | Accuracy (5-repeat mean) | 85.5% (+1.9 / -2.2) | 82.9% (+2.1 / -2.3) | 40.7% (*supports*) |
 | Accuracy (single call) | 85.0% (+0.9 / -0.9) | 82.8% (+0.9 / -1.0) | |
 | Top-label ECE (10 bins) | 0.064 | 0.051 | |
-| ECE of a perfectly calibrated model with the same scores (mean; 95th percentile) | 0.027; 0.042 | 0.034; 0.053 | |
+| Top-label ECE noise floor (mean; 95th percentile) | 0.027; 0.042 | 0.034; 0.053 | |
 | Classwise ECE | 0.057 | 0.038 | |
 | Brier score (lower is better) | 0.226 | 0.265 | |
 | Realized cost per call | \$0.000033 | \$0.00019 | |
 | Median latency | 280 ms | 1.6 s | |
 
-The whole run was 3,890 calls, none failed, for \$0.40. The noise-floor row is a seeded simulation: 4,000 draws of outcomes from each backend's own stated top probabilities, scored the same way. The full tables are in [`results/scifact-m4-dev/summary.md`](results/scifact-m4-dev/summary.md), generated from [`results.json`](results/scifact-m4-dev/results.json).
+The whole run was 3,890 calls, none failed, for \$0.40. The full tables are in [`results/scifact/summary.md`](results/scifact/summary.md), generated from [`results.json`](results/scifact/results.json).
 
-![Reliability diagrams: observed frequency against stated mean probability, per option and for the top option, for Jev and Haiku](results/scifact-m4-dev/reliability_mean.png)
+**The metrics.** *Top-label ECE* sorts the pairs into 10 equal-width bins by the top option's stated probability, takes each bin's gap between its mean stated probability and the fraction of its pairs answered right, and averages the gaps weighted by pair count: Jev's 0.064 means its top probability is off by about 6 points on average. *Classwise ECE* does the same for each option's own probability and averages over the three options. ECE comes out above zero even for a perfectly calibrated model, because each bin's accuracy is measured on a finite sample, so the *noise floor* simulates that model: 4,000 seeded draws of outcomes from each backend's own stated top probabilities, scored the same way. The *Brier score* is the squared distance between the probability vector and the one-hot true answer, averaged over pairs (0 is perfect, 2 the worst). It's a proper scoring rule, so it needs no bins, and it rewards accuracy and sharpness as well as calibration.
 
-![Distribution of the top stated probability, split into right and wrong answers, for Jev and Haiku](results/scifact-m4-dev/top_probability.png)
+**Reliability diagrams.** Each panel bins the pairs by a stated probability (the mean of the 5 calls) and plots how often that option was the true answer, with $1\sigma$ bars. On the diagonal the probability means what it says, and below it the model is overconfident. *Top option* is the probability a working point acts on, and the other three panels are each option's own probability, the inputs to classwise ECE. Jev's top bin is the one to look at: its 245 pairs at 0.9 or above have a mean stated probability of 0.98 and are right 93% of the time ([finding 3](#findings)).
+
+![Reliability diagrams: observed frequency against stated mean probability, per option and for the top option, for Jev and Haiku](results/scifact/reliability_mean.png)
+
+**Where the top probabilities fall,** split into right and wrong answers. Jev states 0.98 or more on more than half the pairs (176 of 339, 12 of them wrong), while Haiku never goes above 0.96. That difference in shape decides how much each backend can answer at a strict threshold ([finding 4](#findings)).
+
+![Distribution of the top stated probability, split into right and wrong answers, for Jev and Haiku](results/scifact/top_probability.png)
 
 ### Working points
 
-Each backend's top probability decides whether to act on its answer or escalate the item. An acted-on answer scores +1 if right and $-c$ if wrong, and an escalated item scores 0. If the probabilities are honest, acting pays exactly when $p \ge c/(1+c)$, so $c$ = 1, 3 and 9 mean thresholds of 0.5, 0.75 and 0.9. SciFact has no real error cost, so the three values of $c$ were fixed by the thresholds they imply, before the run. Three rows per backend and cost:
+Each backend's top probability decides whether to act on its answer or escalate the item to a person. An acted-on answer scores +1 if right and $-c$ if wrong, and an escalated item scores 0. If the top probability $p$ is honest, acting is worth $p - (1-p)c$ on average against 0 for escalating, so acting pays exactly when $p \ge c/(1+c)$, and $c$ = 1, 3 and 9 mean thresholds of 0.5, 0.75 and 0.9. SciFact has no real error cost, so the three values of $c$ were fixed by the thresholds they imply, before the run. Three rows per backend and cost:
 
 - **Stated** - the threshold is $c/(1+c)$, with nothing tuned. This row takes the probabilities at their word.
-- **Frozen** - the threshold that maximizes utility on a seeded, label-stratified half of the pairs (169), frozen and reported on the other half (170). Every distinct score is a candidate threshold.
-- **Oracle** - tuned on the reporting half itself. It's a biased upper bound, shown only for scale.
+- **Frozen** - the threshold is tuned on one half of the pairs (169), then frozen and scored on the other half (170). The halves are a seeded random split, drawn within each label so both keep the full set's label mix. Tuning tries each score that occurs on the tuning half, since utility can only change at those values, and keeps the best.
+- **Oracle** - tuned on the reporting half itself. A threshold picked with hindsight on the pairs it's scored on fits their noise as well as their signal, so this row is a biased upper bound, shown only for scale.
 
-All rows are on the 170-pair reporting half. Cells give coverage / accuracy of the answered pairs / utility per pair.
+All rows are on the 170-pair reporting half. Cells give coverage (the share of pairs answered) / accuracy of the answered pairs / utility per pair (the total score over all 170 pairs, escalated ones included at 0, divided by 170).
 
 | Backend | $c$ | Stated | Frozen (threshold) | Oracle utility |
 |---|---|---|---|---|
@@ -90,14 +96,14 @@ All rows are on the 170-pair reporting half. Cells give coverage / accuracy of t
 
 ### Findings
 
-1. **Both backends are far above the majority baseline, and the accuracy gap between them isn't significant.** On the 39 pairs where exactly one of them is right, Jev is right on 24 and Haiku on 15 (exact McNemar test, $p$ = 0.2).
-2. **On this set, the stated probability set the working point as well as tuning did.** At every cost, the stated row is within about 0.04 utility per pair of the frozen row, the net of a handful of answers out of 170.
-3. **But neither backend's probabilities hold at face value at the top end.** Jev states 0.95 or more on 222 of the 339 pairs, with a mean of 0.990, and is right on 94.1% of them. Haiku states 0.9 or more on 195 pairs, with a mean of 0.930, and is right on 88.2%. Jev's ECE is above the 95th percentile of its noise floor, and Haiku's sits just under it. The stated rule worked in finding 2 because the break-even accuracy at $c$ = 9 (90%) is below what both backends deliver there. A workflow that needed 98% wouldn't get it from Jev's top scores: the 176 pairs it states at 0.98 or more are right 93.2% of the time. **That gap is what a working point measured on labeled data catches and a stated threshold doesn't.**
+1. **Both backends are far above the majority baseline, and the accuracy gap between them isn't significant.** On the 39 pairs where exactly one of them is right, Jev is right on 24 and Haiku on 15. With no real difference between them, a split at least that lopsided happens about one time in five (exact McNemar test, $p$ = 0.2).
+2. **On this set, the stated probability set the working point about as well as tuning did.** At every cost, the stated row is within about 0.04 utility per pair of the frozen row, the net of a handful of answers out of 170.
+3. **But neither backend's probabilities hold at face value at the top end.** Jev states 0.95 or more on 222 of the 339 pairs, with a mean of 0.990, and is right on 94.1% of them. Haiku states 0.9 or more on 195 pairs, with a mean of 0.930, and is right on 88.2%. Jev's ECE (0.064) is higher than 95% of what noise alone gives a perfectly calibrated model with its scores (0.042), so its miscalibration isn't noise. Haiku's (0.051) sits just under its own 95th percentile (0.053). The stated rule worked in finding 2 because the break-even accuracy at $c$ = 9 (90%) is below what both backends deliver there. A workflow that needed 98% wouldn't get it from Jev's top scores: the 176 pairs it states at 0.98 or more are right 93.2% of the time. **That gap is what a working point measured on labeled data catches and a stated threshold doesn't.**
 4. **The two differ in shape.** Jev pushes most pairs to the top, while Haiku never states more than 0.96. So at $c$ = 9, Jev answers 75% of the pairs at 94.5% accuracy (+0.34 per pair), while Haiku's best row nets +0.09: its tuned threshold answers only 15% of the pairs, and its stated threshold answers 61% at a thin margin over break-even.
 5. **Haiku reads contradiction as support.** It answered *supports* on 14 of the 71 *contradicts* pairs (Jev: 3), and 10 of those are among its 23 errors at 0.9 or above. Both backends read evidence into no-evidence abstracts about equally often (Jev 26, Haiku 25, of 130).
 6. **Jev's `confidence` is its rescaled top probability**, $(K p_{\max} - 1)/(K - 1)$ for $K$ options. It matches exactly on the 500 2-option calls and to within 0.005, rounding, on the 1,695 3-option calls, so it carries no information beyond the probabilities.
-7. **The repeats add little.** Single-call accuracy is within 0.5 points of the 5-repeat answer, and the answer changes across repeats on 3% (Jev) and 7% (Haiku) of pairs. The vote fraction is much worse calibrated (top-label ECE about 0.15; [diagram](results/scifact-m4-dev/reliability_vote.png)) because 5 votes are nearly always unanimous. The stated probability carries the signal.
-8. **No calibration ranking.** Haiku's ECE is lower but Jev's Brier score is better (sharper and more accurate), and the ECE difference between them isn't tested. Comparing with vals.ai's 0.011 isn't like for like either: a different claim set, Jev 1.13 rather than 1.14, and possibly different binning.
+7. **The repeats add little.** Single-call accuracy is within 0.5 points of the 5-repeat answer, and the answer changes across repeats on 3% (Jev) and 7% (Haiku) of pairs. Majority voting over the repeats makes a poor confidence score. The vote fraction, the share of the 5 calls that gave the answer, is 5 of 5 on 329 (Jev) and 315 (Haiku) of the 339 pairs, so it claims certainty on answers that are right 86% of the time (top-label ECE about 0.15; [diagram](results/scifact/reliability_vote.png)). The stated probability varies from pair to pair and tracks accuracy, so it's the score to set a threshold on.
+8. **No calibration ranking.** The two metrics point opposite ways. Haiku's ECE is lower, so its probabilities sit closer to its accuracy, but Jev's Brier score is better, because Brier also rewards being right and being sharp. The 0.013 gap in ECE hasn't been tested for significance, so neither backend is called the better calibrated. Comparing with vals.ai's 0.011 isn't like for like either: a different claim set, Jev 1.13 rather than 1.14, and possibly different binning.
 9. **Haiku costs 5.8 times as much as Jev per call** (realized cost as billed by OpenRouter), more than double the ratio of their input list prices, because Haiku also pays for output and its prompts are longer. It used no reasoning tokens on 61% of calls.
 
 ### Scope and limitations
@@ -118,9 +124,9 @@ All rows are on the 170-pair reporting half. Cells give coverage / accuracy of t
 |---|---|---|
 | D1 | From the listing line alone: worth reading the full job description? | yes/no |
 | D2 | Hard gates on the full job description - seven yes/no questions from a written rubric (e.g. does it require an active security clearance?) | 7 x yes/no |
-| D3 | Which of four target lanes the role falls in | choice |
-| D4 | Fit with the search's thesis: on-thesis, a skill bridge, or neither | choice |
-| D5 | Tier, asked directly and also computed from the D2-D4 answers, to see which agrees better with the human | choice |
+| D3 | Which target lane the role falls in (evaluation, scientific ML, infrastructure for science, agentic tooling), or none | choice |
+| D4 | Fit with where the search is headed (AI for science, simulation and surrogate modeling, scientific instrumentation): on that path, a skill bridge toward it, or neither | choice |
+| D5 | Match tier (very high / high / medium / drop), asked directly and also computed from the D2-D4 answers, to see which agrees better with the human | choice |
 
 **Built so far:**
 
@@ -171,8 +177,8 @@ pip install -e .
 export OPENROUTER_API_KEY=...          # read from the environment, never from a file
 
 dme scifact download                   # fetch the pinned SciFact release
-dme scifact run --name m4-dev          # 3,890 calls; resumes if interrupted
-dme scifact report --name m4-dev       # results.json, summary.md, figures
+dme scifact run --name dev             # 3,890 calls; resumes if interrupted
+dme scifact report --name dev          # results.json, summary.md, figures
 ```
 
 Data and runs go under `scifact_dir` in `config.yaml` (`~/.local/share/decision-model-eval/scifact` by default), outside the repo. Every call is appended to a JSONL decision log as it returns, and `dme replay` re-asks a log's inputs against any backend.
@@ -196,7 +202,7 @@ src/decision_model_eval/
   store.py, ingest.py, record.py, sample.py, view.py, surfaced.py
                      the listings store, its ingest, and the blind label draws
   cli.py             the dme command
-results/scifact-m4-dev/   the control run's aggregate results
+results/scifact/          the control run's aggregate results
 tests/                    pytest, one file per module
 ```
 

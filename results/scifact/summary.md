@@ -1,4 +1,4 @@
-# SciFact control run: m4-dev
+# SciFact control run: dev
 
 dev split, 339 (claim, abstract) pairs, 5 repeats per backend; release sha256 11c621288d41. Rates are given with 1 sigma Clopper-Pearson intervals.
 

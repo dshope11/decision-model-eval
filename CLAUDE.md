@@ -57,8 +57,12 @@ decision-model-eval/
     jsonl.py                  <- strict JSONL reading and field validation
     cli.py                    <- the `dme` command
   scripts/                    <- interim stand-alone helpers, until dme label reads D2/D5:
-    build_d2_sheet.py         <-   the stage-2 (D2 + D5) sheet from a recorded D1 sheet
-    jd_to_text.py             <-   a fetched non-WaaS JD (iCIMS / SmartRecruiters) -> plain text
+    jd_to_text.py             <-   a fetched non-WaaS JD (iCIMS / SmartRecruiters / Greenhouse /
+                                   Ashby) -> plain text
+    reveal_d1.py              <-   a recorded blind sample's D1 labels against the pipeline's call
+                                 (the stage-2 sheet builder lives with the private label sheets)
+  results/scifact-m4-dev/     <- the control run's aggregate report, copied from its run dir;
+                                 never items.jsonl or the decision logs (per-item model outputs)
   tests/                      <- pytest; one file per module
   .claude/hooks/check.sh      <- ruff + pytest + mypy after every agent edit
 ```

@@ -9,7 +9,9 @@ Each item has ``REPEATS`` answers per backend, which give two scores per option:
 repeats that answered it). An item's answer is its stated mean's top option.
 
 - **Accuracy, calibration, agreement and Jev's confidence check use every item**:
-  nothing in them is tuned.
+  nothing in them is tuned. Each top-label ECE comes with its floor, the ECE a perfectly
+  calibrated model stating the same probabilities would show (``calibration.ece_floor``,
+  seeded with the run's seed).
 - **Working points use a seeded 50/50 split, stratified by label.** An answered item
   scores +1 if right and -c if wrong; an escalated item scores 0; the score is the top
   option's probability. Three rows per c, all evaluated on the reporting half:
@@ -37,6 +39,7 @@ from decision_model_eval.calibration import (
     Reliability,
     brier,
     classwise_ece,
+    ece_floor,
     reliability,
     top_label,
     top_label_ece,
@@ -241,6 +244,8 @@ def analyze(header: dict[str, Any], attempts: list[dict[str, Any]],
         for kind in SCORES:
             p = a.scores(kind)
             entry["calibration"][kind] = {"top_label_ece": top_label_ece(p, a.y),
+                                          "top_label_ece_floor": ece_floor(
+                                              p.max(axis=1), seed=header["seed"]),
                                           "classwise_ece": classwise_ece(p, a.y),
                                           "brier": brier(p, a.y)}
             entry["reliability"][kind] = _curves(p, a.y, a.options)
@@ -296,18 +301,25 @@ def summary(results: dict[str, Any], name: str) -> str:
         f"{run['release_sha256'][:12]}. Rates are given with 1 sigma Clopper-Pearson "
         "intervals.", "",
         "## Accuracy and calibration (3-option verdict, every pair, stated mean)", "",
-        "| Backend | Accuracy | Single-call accuracy | Top-label ECE | Classwise ECE "
-        "| Brier | Cost |",
-        "|---|---|---|---|---|---|---|",
+        "| Backend | Accuracy | Single-call accuracy | Top-label ECE | ECE floor "
+        "| Classwise ECE | Brier | Cost |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     for entry in verdict.values():
         cal = entry["calibration"]["mean"]
+        floor = cal["top_label_ece_floor"]
         lines.append(f"| {entry['model']} | {_pct(entry['accuracy'])} | "
                      f"{_pct(entry['accuracy_single_call'])} | {cal['top_label_ece']:.3f} | "
+                     f"{floor['mean']:.3f} (95th pct {floor['p95']:.3f}) | "
                      f"{cal['classwise_ece']:.3f} | {cal['brier']:.3f} | "
                      f"${entry['cost']['usd']:.3f} |")
     base = results["majority_baseline"]
-    lines += [f"| majority class ({base['answer']}) | {_pct(base['accuracy'])} | | | | | |",
+    draws = next(iter(verdict.values()))["calibration"]["mean"]["top_label_ece_floor"]["draws"]
+    lines += [f"| majority class ({base['answer']}) | {_pct(base['accuracy'])} "
+              "| | | | | | |", "",
+              "ECE floor: the top-label ECE a perfectly calibrated model stating the same "
+              f"probabilities shows from sampling noise alone ({draws} simulated draws; mean "
+              "and 95th percentile).",
               "", "## Working points (reporting half, top stated-mean probability)", "",
               f"Split: selection {results['split']['selection']}, "
               f"reporting {results['split']['reporting']}. An answer scores +1 if right "

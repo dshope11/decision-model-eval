@@ -9,6 +9,9 @@ sum to exactly 1; nothing here renormalizes them.
 - ``ece``: the expected calibration error, the item-weighted mean of
   ``|observed - stated|`` over bins. ``top_label_ece`` asks it of the top option (the
   probability a working point acts on); ``classwise_ece`` averages it over options.
+- ``ece_floor``: the ECE a perfectly calibrated model stating the same probabilities would
+  show from sampling noise alone. Binned ECE on a few hundred items sits above zero even
+  then, so a measured ECE is read against this floor.
 - ``brier``: the multi-class Brier score, a proper scoring rule that needs no bins.
 
 Bins are ``BINS`` equal-width intervals ``[k/BINS, (k+1)/BINS)``; a probability of
@@ -24,6 +27,7 @@ import numpy as np
 from decision_model_eval.stats import clopper_pearson
 
 BINS = 10
+FLOOR_DRAWS = 4000
 
 
 @dataclass(frozen=True)
@@ -37,12 +41,18 @@ class Reliability:
     n: np.ndarray  # items in the bin
 
 
+def _bin_sums(p: np.ndarray, hit: np.ndarray,
+              bins: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Per bin: the items, the events among them, and the sum of stated probabilities."""
+    index = np.minimum((p * bins).astype(int), bins - 1)
+    return (np.bincount(index, minlength=bins),
+            np.bincount(index, weights=hit.astype(float), minlength=bins),
+            np.bincount(index, weights=p, minlength=bins))
+
+
 def reliability(p: np.ndarray, hit: np.ndarray, bins: int = BINS) -> Reliability:
     """Bin stated probabilities ``p`` of an event against whether it happened (``hit``)."""
-    index = np.minimum((p * bins).astype(int), bins - 1)
-    n = np.bincount(index, minlength=bins)
-    k = np.bincount(index, weights=hit.astype(float), minlength=bins)
-    total = np.bincount(index, weights=p, minlength=bins)
+    n, k, total = _bin_sums(p, hit, bins)
     full = n > 0
     lo, hi = clopper_pearson(k[full], n[full])
     return Reliability(stated=total[full] / n[full], observed=k[full] / n[full],
@@ -50,8 +60,19 @@ def reliability(p: np.ndarray, hit: np.ndarray, bins: int = BINS) -> Reliability
 
 
 def ece(p: np.ndarray, hit: np.ndarray, bins: int = BINS) -> float:
-    curve = reliability(p, hit, bins)
-    return float(np.sum(curve.n * np.abs(curve.observed - curve.stated)) / curve.n.sum())
+    n, k, total = _bin_sums(p, hit, bins)
+    # A bin's n * |k / n - total / n| is |k - total|, and an empty bin adds nothing.
+    return float(np.abs(k - total).sum() / n.sum())
+
+
+def ece_floor(p: np.ndarray, seed: int, draws: int = FLOOR_DRAWS,
+              bins: int = BINS) -> dict[str, float | int]:
+    """The mean and 95th percentile of the ECE over ``draws`` simulated outcomes, each
+    event happening with its stated probability ``p``: what sampling noise alone gives."""
+    rng = np.random.default_rng(seed)
+    values = np.array([ece(p, rng.random(p.shape) < p, bins) for _ in range(draws)])
+    return {"mean": float(values.mean()), "p95": float(np.percentile(values, 95)),
+            "draws": draws, "seed": seed}
 
 
 def top_label(p: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

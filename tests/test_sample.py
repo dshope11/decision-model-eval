@@ -168,7 +168,7 @@ def test_sheet_shows_the_listing_line_and_nothing_else(
     tonight: sqlite3.Connection, tmp_path: Path,
 ) -> None:
     text = make_sheet(tonight, tmp_path / "sheet.txt").read_text()
-    assert "WindBorne Systems :: Role" in text
+    assert "Acme Robotics :: Role" in text
     assert "    work: ? | level: ?" in text  # the view's details line
     assert "not US or remote" not in text  # no filter verdict on the sheet
     assert "# sample: blind-2026-W40" in text

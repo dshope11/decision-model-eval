@@ -9,6 +9,7 @@ from decision_model_eval.calibration import (
     brier,
     classwise_ece,
     ece,
+    ece_floor,
     reliability,
     top_label,
     top_label_ece,
@@ -36,6 +37,20 @@ def test_perfectly_calibrated_bins_have_zero_ece() -> None:
     p = np.array([0.25] * 4 + [0.75] * 4)
     hit = np.array([True, False, False, False, True, True, True, False])
     assert ece(p, hit) == pytest.approx(0.0)
+
+
+def test_ece_floor_of_one_bin_is_the_binomial_mean_deviation() -> None:
+    p = np.full(200, 0.7)
+    floor = ece_floor(p, seed=1, draws=500)
+    # One bin: |k / 200 - 0.7| with k ~ Binomial(200, 0.7), mean about sd * sqrt(2 / pi)
+    assert floor["mean"] == pytest.approx(np.sqrt(0.7 * 0.3 / 200 * 2 / np.pi), rel=0.1)
+    assert floor["p95"] > floor["mean"]
+    assert ece_floor(p, seed=1, draws=500) == floor
+
+
+def test_certain_probabilities_have_no_floor() -> None:
+    floor = ece_floor(np.array([0.0, 1.0, 1.0]), seed=0, draws=10)
+    assert floor["mean"] == floor["p95"] == 0.0
 
 
 def test_top_label_and_classwise() -> None:

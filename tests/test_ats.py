@@ -31,7 +31,7 @@ def test_recognized_urls(url: str, expected: AtsId) -> None:
 
 @pytest.mark.parametrize(
     "url",
-    [None, "", "https://windbornesystems.com/careers/software-engineer",
+    [None, "", "https://acmerobotics.example/careers/software-engineer",
      "https://job-boards.greenhouse.io/anthropic"],
 )
 def test_unrecognized_urls(url: str | None) -> None:

@@ -84,6 +84,8 @@ def test_report(run_dir: Path) -> None:
         assert entry["answer_changed_across_repeats"] == 0.0
         # Top option: 6 items at 0.8, all right; 6 at 0.6, all wrong -> |1-0.8|, |0-0.6|
         assert entry["calibration"]["mean"]["top_label_ece"] == pytest.approx(0.4)
+        floor = entry["calibration"]["mean"]["top_label_ece_floor"]
+        assert 0 < floor["mean"] < floor["p95"] < 0.4 and floor["seed"] == 42
     assert results["majority_baseline"]["accuracy"]["k"] == 4
     assert results["agreement"]["agreement"] == 1.0
     assert np.trace(np.array(results["agreement"]["matrix"])) == 12
@@ -93,6 +95,7 @@ def test_report(run_dir: Path) -> None:
     assert all(c["max_abs_residual"] == pytest.approx(0.0) for c in checks)
     assert list(results["points"]["scifact.supports"]) == ["jev"]
     assert "## Working points" in text and "| jev | 9 | stated | 0.900 |" in text
+    assert "(95th pct " in text and "ECE floor: the top-label ECE" in text
 
 
 def test_stated_rows_act_at_break_even(run_dir: Path) -> None:

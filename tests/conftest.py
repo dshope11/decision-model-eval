@@ -144,9 +144,9 @@ def run_header(**overrides: Any) -> dict[str, Any]:
 def hit(**overrides: Any) -> dict[str, Any]:
     record: dict[str, Any] = {
         "type": "hit", "query": "ml engineer", "source_key": "95451597",
-        "passed_filter": True, "company": "WindBorne Systems",
+        "passed_filter": True, "company": "Acme Robotics",
         "title": "Software Engineer, Machine Learning Systems",
-        "url": "https://windbornesystems.com/careers/software-engineer-ml-systems",
+        "url": "https://acmerobotics.example/careers/software-engineer-ml-systems",
         "location": "Palo Alto, CA", "raw": {"id": 95451597, "weight": 0},
     }
     record.update(overrides)

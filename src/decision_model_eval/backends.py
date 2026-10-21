@@ -9,6 +9,13 @@ is not reproducible.
 the same model id to different providers (Anthropic, Amazon Bedrock, Google
 Vertex, Azure), and not every provider supports every feature - several Bedrock
 endpoints for Opus 5.5 lack structured outputs.
+
+``effort`` pins the reasoning effort, which changes the answers as much as a model
+version does, so it is part of the recorded model identity (``model_label``). Anthropic
+models go through OpenRouter's Anthropic-format endpoint (``api="messages"``) because it
+is the route where the setting reaches the model: on 2026-10-20, ``output_config.effort``
+there raised Haiku 5.5's thinking tokens steadily from low to max, while
+``reasoning.effort`` on chat completions had no measurable effect.
 """
 
 from __future__ import annotations
@@ -23,39 +30,50 @@ class BackendInfo:
 
     model: str  # OpenRouter model id sent in the request
     resolved_model: str  # model id the response is expected to report
-    api: Literal["chat", "decisions"]  # chat completions, or Jev's typed-question endpoint
+    api: Literal["messages", "decisions"]  # Anthropic-format messages, or Jev's typed questions
     role: Literal["backend", "labeler"]  # backend under test, or the strong-model labeler
     provider: str  # OpenRouter provider tag to pin
     remote: bool  # True: a third party sees the payload, so private fields are stripped
+    effort: str | None  # pinned reasoning effort; None where the model has no such setting
     description: str
+
+    @property
+    def model_label(self) -> str:
+        """The model as recorded: the resolved id, plus ``/effort=<level>`` where pinned."""
+        if self.effort is None:
+            return self.resolved_model
+        return f"{self.resolved_model}/effort={self.effort}"
 
 
 BACKENDS: dict[str, BackendInfo] = {
     "jev": BackendInfo(
-        model="typesafe/jev-1.13",
-        resolved_model="typesafe/jev-1.13-20260917",
+        model="typesafe/jev-1.14",
+        resolved_model="typesafe/jev-1.14-20261014",
         api="decisions",
         role="backend",
         provider="typesafe",
         remote=True,
-        description="TypeSafe Jev 1.13, a decision model with typed questions",
+        effort=None,
+        description="TypeSafe Jev 1.14, a decision model with typed questions",
     ),
     "haiku": BackendInfo(
-        model="anthropic/claude-haiku-4.5",
-        resolved_model="anthropic/claude-haiku-4.5",
-        api="chat",
+        model="anthropic/claude-haiku-5.5",
+        resolved_model="anthropic/claude-haiku-5.5",
+        api="messages",
         role="backend",
         provider="anthropic",
         remote=True,
-        description="Claude Haiku 4.5, a small general-purpose model",
+        effort="medium",  # the model's default, pinned so a changed default can't move results
+        description="Claude Haiku 5.5, a small general-purpose model",
     ),
     "opus": BackendInfo(
         model="anthropic/claude-opus-5.5",
         resolved_model="anthropic/claude-opus-5.5",
-        api="chat",
+        api="messages",
         role="labeler",
         provider="anthropic",
         remote=True,
+        effort=None,  # chosen at M6 with the labeling prompts; decide() refuses it until then
         description="Claude Opus 5.5, the strong-model labeler",
     ),
 }

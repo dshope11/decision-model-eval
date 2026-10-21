@@ -4,11 +4,24 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import WriteJsonl, hit, run_header
+from conftest import (
+    JEV_CHOICE,
+    SCIFACT_ITEM,
+    STATE,
+    VERDICT,
+    FakeTransport,
+    WriteJsonl,
+    hit,
+    log_lines,
+    run_header,
+)
 
+from decision_model_eval.client import decide
+from decision_model_eval.decision_log import DecisionLog
 from decision_model_eval.ingest import ingest_file
 from decision_model_eval.jsonl import FormatError
 from decision_model_eval.record import record_file
@@ -123,3 +136,46 @@ def test_unknown_event_is_rejected(
     bad = {"type": "event", "listing": LISTING, "event": "ghosted", "at": "2026-10-03"}
     with pytest.raises(FormatError, match="ghosted"):
         record_file(ingested, write_jsonl(BATCH, bad))
+
+
+def decision_log(tmp_path: Path, item: dict[str, Any]) -> Path:
+    """A format-2 log from decide(): one rate-limited attempt, then a success."""
+    fake = FakeTransport([(429, {"error": "rate limited"}), (200, JEV_CHOICE)])
+    with DecisionLog(tmp_path / "decisions.jsonl", origin="test", run={"n": 1}) as log:
+        decide("D1", STATE, VERDICT, backend="jev", item=item, log=log, transport=fake,
+               sleep=lambda _: None)
+    return log.path
+
+
+@pytest.mark.usefixtures("api_key")
+def test_records_the_listing_decisions_of_a_decision_log(
+    ingested: sqlite3.Connection, tmp_path: Path
+) -> None:
+    listing_id = ingested.execute("SELECT id FROM listings").fetchone()[0]
+    path = decision_log(tmp_path, {"listing_id": listing_id})
+    result = record_file(ingested, path)
+    assert (result.decisions, result.skipped) == (1, 1)
+    row = ingested.execute("SELECT * FROM decisions").fetchone()
+    assert (row["backend"], row["model"]) == ("jev", "typesafe/jev-1.14-20261014")
+    assert row["prompt_template_hash"] == log_lines(path)[2]["prompt_template_hash"]
+    assert json.loads(row["raw_response"]) == JEV_CHOICE
+    assert json.loads(row["output"])["answer"] == "supports"
+    assert record_file(ingested, path).already_recorded
+
+
+@pytest.mark.usefixtures("api_key")
+def test_a_decision_log_of_non_listing_items_is_refused(
+    ingested: sqlite3.Connection, tmp_path: Path
+) -> None:
+    with pytest.raises(FormatError, match="not a listing"):
+        record_file(ingested, decision_log(tmp_path, SCIFACT_ITEM))
+    assert ingested.execute("SELECT COUNT(*) FROM record_batches").fetchone()[0] == 0
+
+
+def test_format_2_decisions_name_an_item(
+    ingested: sqlite3.Connection, write_jsonl: WriteJsonl
+) -> None:
+    with pytest.raises(FormatError, match=r"missing keys \['item'\]"):
+        record_file(ingested, write_jsonl({**BATCH, "format": 2}, decision()))
+    with pytest.raises(FormatError, match="unsupported format 3"):
+        record_file(ingested, write_jsonl({**BATCH, "format": 3}, decision()))

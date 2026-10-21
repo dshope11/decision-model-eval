@@ -3,7 +3,11 @@
     dme init                          create or migrate the store
     dme ingest FILE [FILE ...]        load fetch-script JSONL, then back up
     dme surfaced --since TIMESTAMP    listings those runs let through, with store ids
-    dme record FILE                   load decisions / labels / events JSONL
+    dme record FILE                   load decisions / labels / events JSONL, or a
+                                      decision log's listing decisions
+    dme replay LOG --backend KEY --out NEW_LOG [--repeats N]
+                                      ask a decision log's inputs again, against any
+                                      backend, into a new log
     dme sample --since TIMESTAMP [--until TIMESTAMP] --name NAME --out SHEET [--size 30]
                [--seed N] [--exclude SHEET ...] [--include-sampled]
                                       seeded blind draw, written as a label sheet;
@@ -30,10 +34,14 @@ from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
 
+from decision_model_eval import jsonl
+from decision_model_eval.backends import BACKENDS
 from decision_model_eval.config import REPO_ROOT, EvalConfig, load_config
+from decision_model_eval.decision_log import DecisionLog
 from decision_model_eval.ingest import ingest_file
 from decision_model_eval.jsonl import FormatError, timestamp
 from decision_model_eval.record import record_file
+from decision_model_eval.replay import replay
 from decision_model_eval.sample import (
     already_sampled,
     draw,
@@ -99,8 +107,22 @@ def _record(config: EvalConfig, args: argparse.Namespace) -> int:
     if result.already_recorded:
         print(f"{args.file}: batch {result.batch_uuid} already recorded - skipped")
     else:
+        skipped = f", {result.skipped} failed attempts skipped" if result.skipped else ""
         print(f"{args.file}: {result.decisions} decisions, {result.labels} labels, "
-              f"{result.events} events")
+              f"{result.events} events{skipped}")
+    return 0
+
+
+def _replay(_: EvalConfig, args: argparse.Namespace) -> int:
+    source_run = jsonl.read_records(args.log)[0][1].get("batch_uuid")
+    run = {"replay_of": str(Path(args.log).resolve()), "source_run_uuid": source_run,
+           "backend": args.backend, "model": BACKENDS[args.backend].model_label,
+           "repeats": args.repeats}
+    with DecisionLog(args.out, origin="dme replay", run=run) as log:
+        decisions, failed = replay(args.log, backend=args.backend, log=log,
+                                   repeats=args.repeats)
+    print(f"{args.out}: {len(decisions)} decisions, {failed} failed "
+          f"({args.backend}, {BACKENDS[args.backend].model_label})")
     return 0
 
 
@@ -220,6 +242,13 @@ def build_parser() -> argparse.ArgumentParser:
     record.add_argument("file")
     record.set_defaults(run=_record)
 
+    again = commands.add_parser("replay", help="ask a decision log's inputs again")
+    again.add_argument("log")
+    again.add_argument("--backend", required=True, choices=list(BACKENDS))
+    again.add_argument("--out", required=True, help="new decision log; never overwritten")
+    again.add_argument("--repeats", type=int, default=1)
+    again.set_defaults(run=_replay)
+
     sample = commands.add_parser("sample", help="seeded blind draw as a label sheet")
     sample.add_argument("--since", required=True,
                         help="draw from runs ingested at or after this ISO 8601 UTC time")
@@ -267,7 +296,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return int(args.run(load_config(args.config), args))
-    except (FormatError, sqlite3.IntegrityError, ValueError) as err:
+    except (FormatError, sqlite3.IntegrityError, ValueError, FileExistsError,
+            RuntimeError) as err:
         print(f"dme: error: {err}", file=sys.stderr)
         return 1
 

@@ -29,3 +29,16 @@ def test_roles() -> None:
 
 def test_only_jev_uses_decisions_api() -> None:
     assert [k for k, b in BACKENDS.items() if b.api == "decisions"] == ["jev"]
+
+
+def test_every_messages_backend_under_test_pins_its_effort() -> None:
+    """Effort changes the answers as much as a model version, so it is never left default."""
+    for key in backend_keys():
+        info = BACKENDS[key]
+        if info.api == "messages":
+            assert info.effort in {"low", "medium", "high", "xhigh", "max"}
+
+
+def test_model_label_carries_the_effort() -> None:
+    assert BACKENDS["haiku"].model_label == "anthropic/claude-haiku-5.5/effort=medium"
+    assert BACKENDS["jev"].model_label == "typesafe/jev-1.14-20261014"

@@ -32,6 +32,14 @@ it, a run at a different effort level would silently mix into the baseline.
 Blind labels record theirs as the rubric version, and agreement is only measured
 between judgments made on the same information. Batches recorded before the
 requirement (the 2026-10-03 run, view v1) carry none.
+
+**Format 2 is the decision log** that ``decide()`` writes (``decision_log.py``,
+``client.py``). The header may add a ``"run"`` object. Decision lines name what they
+decided as ``"item"`` instead of ``"listing"`` and add ``"run_uuid"``, ``"attempt"`` and
+``"error"``; ``raw_response`` may be any JSON. Only listing items are recorded - an item
+that is not a listing (a SciFact pair) is an error, since such a log stays as JSONL - and
+failed attempts (``error`` set) are skipped and counted. Labels and events are written as
+in format 1.
 """
 
 from __future__ import annotations
@@ -52,6 +60,9 @@ _DECISION_OPTIONAL = {
     "confidence", "latency_ms", "tokens_in", "tokens_out", "cost_usd", "raw_response",
     "repeat_index", "created_at",
 }
+_DECISION2_REQUIRED = _DECISION_REQUIRED - {"listing"} | {"item"}
+_DECISION2_OPTIONAL = _DECISION_OPTIONAL | {"run_uuid", "attempt", "error"}
+FORMATS = (1, 2)
 INLINE_BACKEND = "claude-inline"
 _INLINE_MODEL = re.compile(r"^[\w.-]+/effort=(low|medium|high|xhigh|max)$")
 _LISTING_VIEW = re.compile(r"^v\d+$")
@@ -68,6 +79,7 @@ class RecordResult:
     decisions: int = 0
     labels: int = 0
     events: int = 0
+    skipped: int = 0  # failed attempts in a decision log, not recorded
 
 
 def record_file(conn: sqlite3.Connection, path: str | Path) -> RecordResult:
@@ -76,9 +88,11 @@ def record_file(conn: sqlite3.Connection, path: str | Path) -> RecordResult:
     header_line, header = records[0]
     if header.get("type") != "batch":
         raise FormatError(f"line {header_line}: the first record must be the batch header")
-    jsonl.check_keys(header, header_line, {"type", "format", "batch_uuid"}, {"origin"})
-    if header["format"] != jsonl.FORMAT_VERSION:
-        raise FormatError(f"line {header_line}: unsupported format {header['format']!r}")
+    fmt = header.get("format")
+    if fmt not in FORMATS:
+        raise FormatError(f"line {header_line}: unsupported format {fmt!r}")
+    jsonl.check_keys(header, header_line, {"type", "format", "batch_uuid"},
+                     {"origin"} if fmt == 1 else {"origin", "run"})
     batch_uuid = jsonl.required_text(header["batch_uuid"], header_line, "batch_uuid")
     if conn.execute(
         "SELECT 1 FROM record_batches WHERE batch_uuid = ?", (batch_uuid,)
@@ -86,6 +100,7 @@ def record_file(conn: sqlite3.Connection, path: str | Path) -> RecordResult:
         return RecordResult(batch_uuid=batch_uuid, already_recorded=True)
 
     counts = {"decision": 0, "label": 0, "event": 0}
+    skipped = 0
     conn.execute("BEGIN")
     try:
         batch_id = conn.execute(
@@ -94,7 +109,11 @@ def record_file(conn: sqlite3.Connection, path: str | Path) -> RecordResult:
         ).lastrowid
         for line, record in records[1:]:
             kind = record.get("type")
-            if kind == "decision":
+            if kind == "decision" and fmt == 2:
+                if not _logged_decision(conn, batch_id, record, line):
+                    skipped += 1
+                    continue
+            elif kind == "decision":
                 _decision(conn, batch_id, record, line)
             elif kind == "label":
                 _label(conn, batch_id, record, line)
@@ -109,14 +128,15 @@ def record_file(conn: sqlite3.Connection, path: str | Path) -> RecordResult:
         raise
     return RecordResult(
         batch_uuid=batch_uuid, already_recorded=False, decisions=counts["decision"],
-        labels=counts["label"], events=counts["event"],
+        labels=counts["label"], events=counts["event"], skipped=skipped,
     )
 
 
-def _listing_id(conn: sqlite3.Connection, record: dict[str, Any], line: int) -> int:
-    ref = record["listing"]
+def _listing_id(conn: sqlite3.Connection, record: dict[str, Any], line: int,
+                key: str = "listing") -> int:
+    ref = record[key]
     if not isinstance(ref, dict):
-        raise FormatError(f"line {line}: listing must be an object")
+        raise FormatError(f"line {line}: {key} must be an object")
     if "listing_id" in ref:
         jsonl.check_keys(ref, line, {"listing_id"}, set())
         listing_id = jsonl.integer(ref["listing_id"], line, "listing.listing_id")
@@ -134,8 +154,9 @@ def _listing_id(conn: sqlite3.Connection, record: dict[str, Any], line: int) -> 
     return int(row["id"])
 
 
-def _snapshot_id(conn: sqlite3.Connection, record: dict[str, Any], line: int) -> int:
-    listing_id = _listing_id(conn, record, line)
+def _snapshot_id(conn: sqlite3.Connection, record: dict[str, Any], line: int,
+                 key: str = "listing") -> int:
+    listing_id = _listing_id(conn, record, line, key)
     explicit = jsonl.integer(record.get("snapshot_id"), line, "snapshot_id")
     if explicit is not None:
         row = conn.execute(
@@ -159,6 +180,28 @@ def _optional_json(value: Any) -> str | None:
 def _decision(conn: sqlite3.Connection, batch_id: int | None, rec: dict[str, Any],
               line: int) -> None:
     jsonl.check_keys(rec, line, _DECISION_REQUIRED, _DECISION_OPTIONAL)
+    _insert_decision(conn, batch_id, rec, line, "listing",
+                     jsonl.text(rec.get("raw_response"), line, "raw_response"))
+
+
+def _logged_decision(conn: sqlite3.Connection, batch_id: int | None, rec: dict[str, Any],
+                     line: int) -> bool:
+    """Record one decision-log line; False for a failed attempt, which is skipped."""
+    jsonl.check_keys(rec, line, _DECISION2_REQUIRED, _DECISION2_OPTIONAL)
+    if rec.get("error") is not None:
+        return False
+    item = rec["item"]
+    if not isinstance(item, dict) or set(item) not in ({"listing_id"}, {"source", "source_key"}):
+        raise FormatError(f"line {line}: item {item!r} is not a listing; only listing "
+                          "decisions are recorded, so this log stays as JSONL")
+    raw = rec.get("raw_response")
+    _insert_decision(conn, batch_id, rec, line, "item",
+                     raw if raw is None or isinstance(raw, str) else jsonl.canonical_json(raw))
+    return True
+
+
+def _insert_decision(conn: sqlite3.Connection, batch_id: int | None, rec: dict[str, Any],
+                     line: int, key: str, raw_response: str | None) -> None:
     if rec["backend"] == INLINE_BACKEND and not _INLINE_MODEL.match(str(rec.get("model"))):
         raise FormatError(
             f"line {line}: {INLINE_BACKEND} decisions need model "
@@ -181,7 +224,7 @@ def _decision(conn: sqlite3.Connection, batch_id: int | None, rec: dict[str, Any
         "provider, prompt_template_hash, input_payload, output, confidence, latency_ms, "
         "tokens_in, tokens_out, cost_usd, raw_response, repeat_index, created_at) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (batch_id, _snapshot_id(conn, rec, line),
+        (batch_id, _snapshot_id(conn, rec, line, key),
          jsonl.required_text(rec["decision_point"], line, "decision_point"),
          jsonl.required_text(rec["backend"], line, "backend"),
          jsonl.text(rec.get("model"), line, "model"),
@@ -193,7 +236,7 @@ def _decision(conn: sqlite3.Connection, batch_id: int | None, rec: dict[str, Any
          jsonl.integer(rec.get("tokens_in"), line, "tokens_in"),
          jsonl.integer(rec.get("tokens_out"), line, "tokens_out"),
          jsonl.number(rec.get("cost_usd"), line, "cost_usd"),
-         jsonl.text(rec.get("raw_response"), line, "raw_response"),
+         raw_response,
          jsonl.integer(rec.get("repeat_index"), line, "repeat_index") or 0,
          created_at),
     )

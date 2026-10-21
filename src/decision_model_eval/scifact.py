@@ -241,20 +241,23 @@ def run_logs(run_dir: Path) -> list[Path]:
     return sorted(run_dir.glob("log-*.jsonl"))
 
 
-def answered(run_dir: Path, config: dict[str, Any]) -> set[str]:
-    """Keys of the calls a run's logs already answered. Refuses a log of another run."""
-    done = set()
+def attempts(run_dir: Path, config: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every attempt in a run's logs, failures included. Refuses a log of another run."""
+    found = []
     for path in run_logs(run_dir):
         records = jsonl.read_records(path)
         logged = records[0][1].get("run", {})
         if {k: v for k, v in logged.items() if k != "commit"} != config:
             raise ValueError(f"{path}: logged with another run configuration; "
                              "start a run under a new name")
-        for _, record in records[1:]:
-            if record.get("type") == "decision" and record.get("error") is None:
-                done.add(call_key(record["decision_point"], record["backend"],
-                                  record["item"], record["repeat_index"]))
-    return done
+        found += [record for _, record in records[1:] if record.get("type") == "decision"]
+    return found
+
+
+def answered(run_dir: Path, config: dict[str, Any]) -> set[str]:
+    """Keys of the calls a run's logs already answered."""
+    return {call_key(r["decision_point"], r["backend"], r["item"], r["repeat_index"])
+            for r in attempts(run_dir, config) if r["error"] is None}
 
 
 def run(calls: Sequence[Call], *, log: DecisionLog, workers: int,

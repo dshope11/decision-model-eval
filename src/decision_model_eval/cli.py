@@ -22,6 +22,8 @@
     dme scifact run --name NAME [--limit N] [--workers 8]
                                       ask every planned SciFact question into a new log
                                       under scifact_dir/runs/NAME, skipping calls answered
+    dme scifact report --name NAME    results.json, summary.md and reliability diagrams
+                                      of a complete run, into its report/
     dme backup                        write a consistent copy to backup_dir
     dme stats                         row counts per table
 
@@ -41,7 +43,7 @@ from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from pathlib import Path
 
-from decision_model_eval import jsonl, scifact
+from decision_model_eval import jsonl, scifact, scifact_report
 from decision_model_eval.backends import BACKENDS
 from decision_model_eval.config import REPO_ROOT, EvalConfig, load_config
 from decision_model_eval.decision_log import DecisionLog
@@ -265,6 +267,15 @@ def _scifact_run(config: EvalConfig, args: argparse.Namespace) -> int:
     return 1 if failed else 0
 
 
+def _scifact_report(config: EvalConfig, args: argparse.Namespace) -> int:
+    run_dir = Path(config.scifact_dir).expanduser() / "runs" / args.name
+    _, text, written = scifact_report.report(run_dir, config.scifact_dir)
+    print(text)
+    for path in written:
+        print(path)
+    return 0
+
+
 def _backup(config: EvalConfig, _: argparse.Namespace) -> int:
     print(backup(_open(config), config.backup_dir, config.keep_backups))
     return 0
@@ -353,6 +364,9 @@ def build_parser() -> argparse.ArgumentParser:
     go.add_argument("--limit", type=int, help="only the first N pairs per question (smoke)")
     go.add_argument("--workers", type=int, default=8)
     go.set_defaults(run=_scifact_run)
+    tables = steps.add_parser("report", help="analyze a complete run into its report/")
+    tables.add_argument("--name", required=True)
+    tables.set_defaults(run=_scifact_report)
 
     commands.add_parser("backup", help="write a consistent copy").set_defaults(run=_backup)
     commands.add_parser("stats", help="row counts per table").set_defaults(run=_stats)

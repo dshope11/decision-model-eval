@@ -23,8 +23,8 @@ import numpy as np
 import pytest
 
 from decision_model_eval.thresholds import (
-    _report_at,
     _threshold_at_tpr,
+    report_at,
     scan_thresholds,
     select_threshold,
     weighted_counts,
@@ -87,16 +87,26 @@ def test_baseline_matched_threshold_selected_on_selection_split() -> None:
         SCORES_SEL, Y_SEL, W_SEL, SCORES_REP, Y_REP, W_REP,
         objective=asimov, baseline_tpr=0.5,
     )
+    matched = scan.baseline_matched
+    assert matched is not None
     # On the selection split, TPR=0.5 (unweighted) is first reached at threshold 0.9
-    assert scan.baseline_matched.threshold == pytest.approx(0.9)
+    assert matched.threshold == pytest.approx(0.9)
     # Evaluated on reporting: only the 0.95 positive passes
-    assert scan.baseline_matched.tpr == pytest.approx(0.5)
-    assert scan.baseline_matched.tp == pytest.approx(8.0)
-    assert scan.baseline_matched.fp == pytest.approx(0.0)
+    assert matched.tpr == pytest.approx(0.5)
+    assert matched.tp == pytest.approx(8.0)
+    assert matched.fp == pytest.approx(0.0)
+
+
+def test_no_baseline_no_matched_row() -> None:
+    scan = scan_thresholds(SCORES_SEL, Y_SEL, W_SEL, SCORES_REP, Y_REP, W_REP,
+                           objective=asimov)
+    assert scan.baseline_matched is None
+    assert scan.frozen == scan_thresholds(SCORES_SEL, Y_SEL, W_SEL, SCORES_REP, Y_REP, W_REP,
+                                          objective=asimov, baseline_tpr=0.5).frozen
 
 
 def test_report_at_unweighted_rates_weighted_counts() -> None:
-    report = _report_at(SCORES_REP, Y_REP, W_REP, threshold=0.5, objective=asimov)
+    report = report_at(SCORES_REP, Y_REP, W_REP, threshold=0.5, objective=asimov)
     # score >= 0.5: positives {0.5, 0.95}, negatives {0.8}
     assert report.tpr == pytest.approx(1.0)
     assert report.fpr == pytest.approx(0.5)
@@ -127,7 +137,7 @@ def test_objective_receives_split_totals() -> None:
     select_threshold(SCORES_SEL, Y_SEL, W_SEL, recording)
     assert set(seen) == {(11.0, 2.0)}
     seen.clear()
-    _report_at(SCORES_REP, Y_REP, W_REP, threshold=0.5, objective=recording)
+    report_at(SCORES_REP, Y_REP, W_REP, threshold=0.5, objective=recording)
     assert seen == [(10.0, 1.5)]
 
 

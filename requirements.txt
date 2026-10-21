@@ -1,5 +1,6 @@
 # Runtime dependencies, exact pins - single source of truth (pyproject.toml reads this file).
 # Dev tooling lives in requirements-dev.txt.
+matplotlib==3.10.9
 numpy==2.4.4
 scipy==1.17.1
 scikit-learn==1.8.0

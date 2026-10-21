@@ -43,6 +43,9 @@ decision-model-eval/
     config.py                 <- EvalConfig dataclass + YAML loader (rejects unknown keys)
     stats.py                  <- clopper_pearson
     thresholds.py             <- frozen / oracle / baseline-matched threshold protocol
+    calibration.py            <- reliability curves, ECE, Brier
+    scifact.py                <- SciFact: pinned download, pairs, frozen questions, resumable run
+    scifact_report.py         <- the control run's results.json, summary.md and figures
     migrations/0001_init.sql  <- listings store schema; PRAGMA user_version tracks the version
     store.py                  <- connect (foreign keys on, WAL), migrate, VACUUM INTO backups
     ingest.py                 <- fetch-script JSONL -> runs, listings, snapshots, sightings
@@ -78,7 +81,8 @@ the agent in the same turn. It only fires in a session started in this repo; fro
 another working directory, run the three by hand.
 
 The store is driven by the `dme` command (`dme --help`): `init`, `ingest`, `surfaced`,
-`record`, `replay`, `sample`, `label`, `preselection add|list`, `backup`, `stats`. Model
+`record`, `replay`, `sample`, `label`, `preselection add|list`, `scifact download|run|report`,
+`backup`, `stats`. Model
 calls go through `client.decide()`; its log format is in the docstrings of `client.py`
 and `decision_log.py`, and tests replay canned live responses (`tests/conftest.py`), so
 the suite never touches the network. The JSONL formats

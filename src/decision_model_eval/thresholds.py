@@ -78,19 +78,19 @@ class ScanResults:
       noisy curve rides upward fluctuations); reported only to display the size
       of the selection bias, never as a result.
     - ``baseline_matched``: threshold whose selection-split TPR matches the
-      baseline's TPR, evaluated on the reporting split.
+      baseline's TPR, evaluated on the reporting split; None without a baseline.
     """
 
     frozen: ThresholdReport
     oracle: ThresholdReport
-    baseline_matched: ThresholdReport
+    baseline_matched: ThresholdReport | None
 
 
 def _totals(y: np.ndarray, w: np.ndarray) -> tuple[float, float]:
     return float(w[y == 1].sum()), float(w[y == 0].sum())
 
 
-def _report_at(
+def report_at(
     scores: np.ndarray, y: np.ndarray, w: np.ndarray, threshold: float, objective: Objective
 ) -> ThresholdReport:
     """Evaluate all operating-point metrics at a fixed, already-chosen threshold."""
@@ -133,19 +133,23 @@ def _threshold_at_tpr(scores_sel: np.ndarray, y_sel: np.ndarray, target_tpr: flo
 def scan_thresholds(
     scores_sel: np.ndarray, y_sel: np.ndarray, w_sel: np.ndarray,
     scores_rep: np.ndarray, y_rep: np.ndarray, w_rep: np.ndarray,
-    objective: Objective, baseline_tpr: float,
+    objective: Objective, baseline_tpr: float | None = None,
 ) -> ScanResults:
     """Select operating thresholds on the selection split, report on the reporting split.
 
     ``scores_sel``/``y_sel``/``w_sel`` are used only to choose thresholds;
     every returned metric is evaluated on ``scores_rep``/``y_rep``/``w_rep``.
-    See :class:`ScanResults` for the three rows.
+    See :class:`ScanResults` for the three rows; ``baseline_matched`` is None
+    without a ``baseline_tpr``, where no non-model baseline has a score to match.
     """
     thr_frozen = select_threshold(scores_sel, y_sel, w_sel, objective)
     thr_oracle = select_threshold(scores_rep, y_rep, w_rep, objective)
-    thr_baseline = _threshold_at_tpr(scores_sel, y_sel, baseline_tpr)
+    baseline_matched = None
+    if baseline_tpr is not None:
+        thr_baseline = _threshold_at_tpr(scores_sel, y_sel, baseline_tpr)
+        baseline_matched = report_at(scores_rep, y_rep, w_rep, thr_baseline, objective)
     return ScanResults(
-        frozen=_report_at(scores_rep, y_rep, w_rep, thr_frozen, objective),
-        oracle=_report_at(scores_rep, y_rep, w_rep, thr_oracle, objective),
-        baseline_matched=_report_at(scores_rep, y_rep, w_rep, thr_baseline, objective),
+        frozen=report_at(scores_rep, y_rep, w_rep, thr_frozen, objective),
+        oracle=report_at(scores_rep, y_rep, w_rep, thr_oracle, objective),
+        baseline_matched=baseline_matched,
     )

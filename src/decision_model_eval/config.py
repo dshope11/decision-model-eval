@@ -32,6 +32,8 @@ class EvalConfig:
     random_seed: int = 42
     backends: list[str] = field(default_factory=lambda: ["jev", "haiku"])
     labeler: str = "opus"
+    # The SciFact release, public data fetched by `dme scifact download`.
+    scifact_dir: str = "~/.local/share/decision-model-eval/scifact"
 
     def __post_init__(self) -> None:
         if self.resolved_db_path().is_relative_to(REPO_ROOT):

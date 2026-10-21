@@ -18,6 +18,10 @@
                                       from the sheet header when it has one
     dme preselection add NAME --config FILE --effective-from DATE [--note TEXT]
     dme preselection list
+    dme scifact download              fetch the pinned SciFact release into scifact_dir
+    dme scifact run --name NAME [--limit N] [--workers 8]
+                                      ask every planned SciFact question into a new log
+                                      under scifact_dir/runs/NAME, skipping calls answered
     dme backup                        write a consistent copy to backup_dir
     dme stats                         row counts per table
 
@@ -28,13 +32,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sqlite3
+import subprocess
 import sys
+from collections import Counter
 from collections.abc import Sequence
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 
-from decision_model_eval import jsonl
+from decision_model_eval import jsonl, scifact
 from decision_model_eval.backends import BACKENDS
 from decision_model_eval.config import REPO_ROOT, EvalConfig, load_config
 from decision_model_eval.decision_log import DecisionLog
@@ -208,6 +215,56 @@ def _preselection_list(config: EvalConfig, _: argparse.Namespace) -> int:
     return 0
 
 
+def _scifact_download(config: EvalConfig, _: argparse.Namespace) -> int:
+    fetched = scifact.download(config.scifact_dir)
+    pairs = scifact.load_pairs(config.scifact_dir)
+    counts = Counter(pair.label for pair in pairs)
+    print(f"{Path(config.scifact_dir).expanduser()}: "
+          f"{'downloaded' if fetched else 'already present'}; {len(pairs)} "
+          f"{scifact.SPLIT} pairs ("
+          + ", ".join(f"{counts[o]} {o}" for o in scifact.VERDICT.options) + ")")
+    return 0
+
+
+def _commit() -> str | None:
+    """The checkout's commit, with ``-dirty`` when tracked files have changed."""
+    def git(*args: str) -> str:
+        return subprocess.run(["git", "-C", str(REPO_ROOT), *args], capture_output=True,
+                              text=True, check=True).stdout.strip()
+    try:
+        dirty = git("status", "--porcelain", "--untracked-files=no")
+        return git("rev-parse", "HEAD") + ("-dirty" if dirty else "")
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+def _scifact_run(config: EvalConfig, args: argparse.Namespace) -> int:
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", args.name):
+        raise ValueError(f"run name {args.name!r}: use letters, digits, '.', '_', '-'")
+    if args.limit is not None and args.limit < 1:
+        raise ValueError("--limit must be at least 1")
+    run_dir = Path(config.scifact_dir).expanduser() / "runs" / args.name
+    settings = scifact.run_config(backends=config.backends, seed=config.random_seed,
+                                  limit=args.limit)
+    done = scifact.answered(run_dir, settings)
+    planned = scifact.plan(scifact.load_pairs(config.scifact_dir), backends=config.backends,
+                           seed=config.random_seed, limit=args.limit)
+    calls = [call for call in planned if call.key not in done]
+    if not calls:
+        print(f"{run_dir}: all {len(planned)} calls answered")
+        return 0
+    path = run_dir / f"log-{datetime.now(UTC):%Y%m%dT%H%M%SZ}.jsonl"
+    with DecisionLog(path, origin="dme scifact run",
+                     run={**settings, "commit": _commit()}) as log:
+        ok, failed = scifact.run(calls, log=log, workers=args.workers)
+    cost = sum(record.get("cost_usd") or 0 for _, record in jsonl.read_records(path)[1:])
+    print(f"{path}: {ok} answered, {failed} failed, {len(done)} answered before; "
+          f"${cost:.4f}")
+    if failed:
+        print(f"run it again to retry the {failed} failed", file=sys.stderr)
+    return 1 if failed else 0
+
+
 def _backup(config: EvalConfig, _: argparse.Namespace) -> int:
     print(backup(_open(config), config.backup_dir, config.keep_backups))
     return 0
@@ -286,6 +343,16 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("--note")
     add.set_defaults(run=_preselection_add)
     actions.add_parser("list").set_defaults(run=_preselection_list)
+
+    control = commands.add_parser("scifact", help="the SciFact control run")
+    steps = control.add_subparsers(dest="step", required=True)
+    steps.add_parser("download").set_defaults(run=_scifact_download)
+    go = steps.add_parser("run", help="ask every planned question; resumes a named run")
+    go.add_argument("--name", required=True,
+                    help="the run's directory under scifact_dir/runs; reused to resume")
+    go.add_argument("--limit", type=int, help="only the first N pairs per question (smoke)")
+    go.add_argument("--workers", type=int, default=8)
+    go.set_defaults(run=_scifact_run)
 
     commands.add_parser("backup", help="write a consistent copy").set_defaults(run=_backup)
     commands.add_parser("stats", help="row counts per table").set_defaults(run=_stats)

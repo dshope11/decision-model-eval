@@ -11,3 +11,6 @@ random_seed: 42
 # Keys into the registry in src/decision_model_eval/backends.py
 backends: [jev, haiku]
 labeler: opus
+
+# The SciFact control set: public data, fetched by `dme scifact download`.
+scifact_dir: ~/.local/share/decision-model-eval/scifact

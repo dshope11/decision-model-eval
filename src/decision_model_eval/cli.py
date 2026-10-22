@@ -106,12 +106,16 @@ def _surfaced(config: EvalConfig, args: argparse.Namespace) -> int:
         fields = [f"L{row.listing_id}", "NEW " if row.new else "seen", source,
                   row.view.company, row.view.title, row.view.location,
                   "; ".join(row.view.details), row.url or ""]
+        fields += [("CHANGED " if c.listing_id == row.listing_id
+                    else f"CHANGED L{c.listing_id} ") + c.text for c in row.changed]
         print(" | ".join(fields))
     new = sum(row.new for row in rows)
     folded = sum(len(row.also) for row in rows)
+    changed = sum(bool(row.changed) for row in rows)
     print(f"[{len(rows)} postings passed the script filters: {new} new, "
           f"{len(rows) - new} seen in earlier runs; {folded} more listings of them "
-          f"from other sources folded in; listing view {VIEW_VERSION}]",
+          f"from other sources folded in; {changed} changed since last judged; "
+          f"listing view {VIEW_VERSION}]",
           file=sys.stderr)
     return 0
 

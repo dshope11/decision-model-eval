@@ -13,6 +13,11 @@ merged. Here they are folded into one row, keyed on what names the posting
 exactly: the getro job id, which every getro board carrying the job shares, and
 the ATS identity parsed from the URL. The row shows the oldest listing and names
 the others in ``also``.
+
+A listing already judged can come back with new content under the same id: a
+retitled req, a new level or band. ``changed`` lists each listing of the row
+whose title, location, level or pay moved since it was last judged, so neither a
+seen row's earlier tier nor a pipeline row's record silently carries over.
 """
 
 from __future__ import annotations
@@ -33,6 +38,19 @@ _EARLIER = """
 
 
 @dataclass(frozen=True)
+class Change:
+    """How a listing's latest content differs from what it was last judged on."""
+    listing_id: int
+    since: str  # the judgment: "dropped 2026-10-07", "D5 decision 2026-10-04"
+    fields: tuple[tuple[str, str, str], ...]  # (field, then, now)
+
+    @property
+    def text(self) -> str:
+        return f"since {self.since}: " + "; ".join(
+            f"{name} {then} -> {now}" for name, then, now in self.fields)
+
+
+@dataclass(frozen=True)
 class Surfaced:
     listing_id: int
     new: bool
@@ -40,17 +58,79 @@ class Surfaced:
     view: ListingView
     url: str | None
     also: tuple[tuple[int, str], ...] = ()  # (listing id, source) of the same posting
+    changed: tuple[Change, ...] = ()  # listings of the posting changed since judged
+
+
+def _compared(view: ListingView) -> dict[str, str]:
+    details = dict(d.split(": ", 1) for d in view.details)
+    return {"title": view.title, "location": view.location,
+            "level": details.get("level", "?"), "pay": details.get("pay", "?")}
+
+
+def changed_since_judged(conn: sqlite3.Connection, listing_id: int,
+                         events_only: bool = False) -> Change | None:
+    """The fields of a listing's latest view that differ from the content it was
+    judged on: first the content at its latest pipeline event, a step David took on
+    what the pipeline row describes; then, unless ``events_only``, the snapshot of
+    its latest ``claude-inline`` decision. Shadow backends' decisions are never an
+    anchor, since the session must not see that they ran. An event's content is
+    the snapshot last sighted on or before its day, or the first one sighted when
+    the event predates the store. Only title, location, level and pay count, so a
+    JD-text edit is not a change. None when nothing was judged or nothing moved."""
+    latest = conn.execute("SELECT id FROM latest_snapshots WHERE listing_id = ?",
+                          (listing_id,)).fetchone()
+    if latest is None:
+        return None
+    anchors: list[tuple[str, int]] = []
+    event = conn.execute(
+        "SELECT event, at FROM pipeline_events WHERE listing_id = ? "
+        "ORDER BY at DESC, id DESC LIMIT 1", (listing_id,)).fetchone()
+    if event is not None:
+        then = conn.execute(
+            "SELECT snapshot_id FROM sightings WHERE listing_id = ? "
+            "AND substr(observed_at, 1, 10) <= substr(?, 1, 10) "
+            "ORDER BY observed_at DESC, id DESC LIMIT 1",
+            (listing_id, event["at"])).fetchone()
+        if then is None:
+            then = conn.execute(
+                "SELECT snapshot_id FROM sightings WHERE listing_id = ? "
+                "ORDER BY observed_at, id LIMIT 1", (listing_id,)).fetchone()
+        anchors.append((f"{event['event']} {event['at'][:10]}", then["snapshot_id"]))
+    if not events_only:
+        decision = conn.execute(
+            """SELECT d.decision_point, d.snapshot_id, d.created_at
+               FROM decisions d JOIN snapshots sn ON sn.id = d.snapshot_id
+               WHERE sn.listing_id = ? AND d.backend = 'claude-inline'
+               ORDER BY d.created_at DESC, d.id DESC LIMIT 1""",
+            (listing_id,)).fetchone()
+        if decision is not None:
+            anchors.append((f"{decision['decision_point']} decision "
+                            f"{decision['created_at'][:10]}", decision["snapshot_id"]))
+    now = None
+    for since, snapshot_id in anchors:
+        if snapshot_id == latest["id"]:
+            continue
+        now = now or _compared(listing_view(conn, latest["id"]))
+        then_fields = _compared(listing_view(conn, snapshot_id))
+        moved = tuple((name, then_fields[name], now[name])
+                      for name in now if then_fields[name] != now[name])
+        if moved:
+            return Change(listing_id, since, moved)
+    return None
 
 
 def posting_keys(row: sqlite3.Row) -> set[tuple[str, ...]]:
     """Keys naming the posting a listing row is for. A listing with none is only
     ever itself. The ATS key keeps the tenant, so a job id is never matched across
-    tenants: a missed fold costs a duplicate row, a wrong one hides a listing."""
+    tenants: a missed fold costs a duplicate row, a wrong one hides a listing. The
+    tenant is casefolded, since ATS hosts treat it so and URLs to one job differ
+    in case (``ashbyhq.com/acme`` and ``/Acme``)."""
     keys: set[tuple[str, ...]] = set()
     if row["source"].startswith("getro:"):
         keys.add(("getro", row["source_key"]))
     if row["ats"] and row["ats_job_id"]:
-        keys.add(("ats", row["ats"], row["ats_tenant"] or "", row["ats_job_id"]))
+        keys.add(("ats", row["ats"], (row["ats_tenant"] or "").casefold(),
+                  row["ats_job_id"]))
     return keys
 
 
@@ -117,6 +197,8 @@ def surfaced(conn: sqlite3.Connection, ingested_since: str) -> list[Surfaced]:
     return [
         Surfaced(listing_id=rows[i]["id"], new=new, source=rows[i]["source"],
                  view=listing_view(conn, rows[i]["snapshot_id"]), url=rows[i]["url"],
-                 also=tuple((rows[j]["id"], rows[j]["source"]) for j in others))
+                 also=tuple((rows[j]["id"], rows[j]["source"]) for j in others),
+                 changed=tuple(change for j in (i, *others)
+                               if (change := changed_since_judged(conn, rows[j]["id"]))))
         for i, new, others in shown
     ]

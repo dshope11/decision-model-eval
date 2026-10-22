@@ -8,7 +8,7 @@ from typing import Any
 from conftest import WriteJsonl, hit, run_header
 
 from decision_model_eval.ingest import ingest_file
-from decision_model_eval.surfaced import surfaced
+from decision_model_eval.surfaced import changed_since_judged, surfaced
 
 LAST_WEEK = "2026-09-26T20:00:00Z"
 TONIGHT = "2026-10-03T20:00:00Z"
@@ -77,6 +77,95 @@ def test_shared_ats_job_folds_across_sources(
               TONIGHT)
     (row,) = surfaced(conn, TONIGHT)
     assert [source for _, source in row.also] == ["waas"]
+
+
+def test_ats_tenant_differing_only_in_case_folds(
+    conn: sqlite3.Connection, write_jsonl: WriteJsonl
+) -> None:
+    job = "00000000-0000-4000-8000-000000000001"
+    ingest_at(conn, write_jsonl(*board_run("getro:103", "lux", hit(
+        source_key="1", url=f"https://jobs.ashbyhq.com/acmerobotics/{job}"),
+        hit(source_key="2", url=f"https://jobs.ashbyhq.com/AcmeRobotics/{job}"),
+    )), TONIGHT)
+    (row,) = surfaced(conn, TONIGHT)
+    assert len(row.also) == 1
+
+
+def decide_on_latest(conn: sqlite3.Connection, created_at: str,
+                     backend: str = "claude-inline") -> None:
+    conn.execute(
+        "INSERT INTO decisions (snapshot_id, decision_point, backend, output, created_at) "
+        "SELECT id, 'D5', ?, '{}', ? FROM latest_snapshots", (backend, created_at))
+
+
+def add_event(conn: sqlite3.Connection, event: str, at: str) -> None:
+    conn.execute("INSERT INTO pipeline_events (listing_id, event, at, recorded_at) "
+                 "SELECT id, ?, ?, ? FROM listings", (event, at, at))
+
+
+def week(run_uuid: str, at: str, **changes: Any) -> list[dict[str, Any]]:
+    return [run_header(run_uuid=run_uuid, started_at=at), hit(**changes)]
+
+
+def test_retitled_listing_is_flagged_against_its_last_decision(
+    conn: sqlite3.Connection, write_jsonl: WriteJsonl
+) -> None:
+    ingest_at(conn, write_jsonl(*week("last-week", LAST_WEEK)), LAST_WEEK)
+    decide_on_latest(conn, LAST_WEEK)
+    ingest_at(conn, write_jsonl(*week("tonight", TONIGHT, title="Research Engineer")),
+              TONIGHT)
+    (row,) = surfaced(conn, TONIGHT)
+    (change,) = row.changed
+    assert change.text == ("since D5 decision 2026-09-26: title Software "
+                           "Engineer, Machine Learning Systems -> Research Engineer")
+
+
+def test_unchanged_view_or_a_decision_on_the_new_content_is_not_flagged(
+    conn: sqlite3.Connection, write_jsonl: WriteJsonl
+) -> None:
+    ingest_at(conn, write_jsonl(*week("last-week", LAST_WEEK)), LAST_WEEK)
+    decide_on_latest(conn, LAST_WEEK)
+    ingest_at(conn, write_jsonl(*week("tonight", TONIGHT, jd_text="New JD text.")),
+              TONIGHT)
+    assert conn.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0] == 2
+    assert surfaced(conn, TONIGHT)[0].changed == ()
+    ingest_at(conn, write_jsonl(*week("later", TONIGHT, title="Research Engineer")),
+              TONIGHT)
+    decide_on_latest(conn, TONIGHT)
+    assert surfaced(conn, TONIGHT)[0].changed == ()
+
+
+def test_shadow_backend_decisions_are_not_an_anchor(
+    conn: sqlite3.Connection, write_jsonl: WriteJsonl
+) -> None:
+    ingest_at(conn, write_jsonl(*week("last-week", LAST_WEEK)), LAST_WEEK)
+    decide_on_latest(conn, LAST_WEEK, backend="jev")
+    ingest_at(conn, write_jsonl(*week("tonight", TONIGHT, title="Research Engineer")),
+              TONIGHT)
+    assert surfaced(conn, TONIGHT)[0].changed == ()
+
+
+def test_event_anchor_outlasts_a_later_decision_on_the_new_content(
+    conn: sqlite3.Connection, write_jsonl: WriteJsonl
+) -> None:
+    ingest_at(conn, write_jsonl(*week("last-week", LAST_WEEK)), LAST_WEEK)
+    add_event(conn, "submitted", "2026-09-26")
+    ingest_at(conn, write_jsonl(*week("tonight", TONIGHT, level="entry_level")), TONIGHT)
+    decide_on_latest(conn, TONIGHT)
+    (row,) = surfaced(conn, TONIGHT)
+    assert [c.text for c in row.changed] == [
+        "since submitted 2026-09-26: level ? -> entry-level"]
+    assert changed_since_judged(conn, row.listing_id, events_only=True) == row.changed[0]
+
+
+def test_event_before_the_first_sighting_compares_with_the_first_snapshot(
+    conn: sqlite3.Connection, write_jsonl: WriteJsonl
+) -> None:
+    ingest_at(conn, write_jsonl(*week("last-week", LAST_WEEK)), LAST_WEEK)
+    add_event(conn, "submitted", "2026-07-05")
+    ingest_at(conn, write_jsonl(*week("tonight", TONIGHT, location="Remote, US")), TONIGHT)
+    (change,) = surfaced(conn, TONIGHT)[0].changed
+    assert change.fields == (("location", "Palo Alto, CA", "Remote, US"),)
 
 
 def test_matching_keys_outside_getro_or_across_tenants_do_not_fold(

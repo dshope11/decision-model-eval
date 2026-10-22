@@ -15,6 +15,7 @@ sheet's own text and is skipped)::
         G2 <name>: pass (strict) | ext-fail: <what the rubric has no gate for>
         G3 <name>: key=value fields in place of a verdict
         G4 <name>: held=a, b | not=c  pass (1 of 3 not held)
+        gaps: core=a, b (pref) | context=c
         D5: high
         D1-check: y
         note: ...
@@ -22,15 +23,18 @@ sheet's own text and is skipped)::
         opened-link ...
 
 Gate names are carried through and never checked: a rubric version says only how
-many gates it has, which verdicts and answers it allows and which fields hold
-lists. Each gate becomes a ``D2.G<n>`` label (the decision point ``decide()`` uses
-for that gate) whose value is an object - ``gate``, ``verdict``, any fields, and
-``unsure`` / ``pref_only`` / ``ext_fail`` when the line says so (``?``,
-``pref-only``, ``| ext-fail: <text>``) - with the comment after the verdict as its
-note. D5 and D1-check become labels whose value is the answer. The note,
-off-rubric and any other line go to the D5 note, and an ``opened-link`` line to
-the note of every label of its entry, since the whole entry was judged with the
-live posting open.
+many gates it has, which verdicts and answers it allows, which fields hold lists
+and whether it asks for a gaps line. Each gate becomes a ``D2.G<n>`` label (the
+decision point ``decide()`` uses for that gate) whose value is an object - ``gate``,
+``verdict``, any fields, and ``unsure`` / ``pref_only`` / ``ext_fail`` when the
+line says so (``?``, ``pref-only``, ``| ext-fail: <text>``) - with the comment after
+the verdict as its note. D5 and D1-check become labels whose value is the answer.
+Under a rubric with gap counting (``d2-v2``), the ``gaps:`` line, fields only, is
+required and becomes a ``D5.gaps`` label: the meaningful gaps the tier was counted
+from. The note, off-rubric and any other line go to the D5 note, and an
+``opened-link`` line to the note of every label of its entry, since the whole entry
+was judged with the live posting open. ``#`` lines are never answers, wherever they
+are, so a sheet can reprint the rubric's criteria inside every entry.
 
 A line carrying a ``[rev]`` marker was completed with a model's help after
 labeling, then approved by the labeler. Its label records ``saw_model_output:
@@ -58,6 +62,7 @@ class JdRubric:
     list_fields: frozenset[str]
     tiers: tuple[str, ...]
     d1_checks: tuple[str, ...]
+    gaps: bool = False  # each entry lists its gaps on a required gaps: line
 
 
 RUBRICS: dict[str, JdRubric] = {
@@ -65,6 +70,11 @@ RUBRICS: dict[str, JdRubric] = {
                       list_fields=frozenset({"held", "not"}),
                       tiers=("very-high", "high", "medium", "drop"),
                       d1_checks=("y", "n", "partly")),
+    # G6 gains a high side that caps the tier; G7 counts experience areas as items.
+    "d2-v2": JdRubric(gates=7, verdicts=("pass", "fail", "tier-drop", "cap-medium"),
+                      list_fields=frozenset({"held", "not", "core", "context"}),
+                      tiers=("very-high", "high", "medium", "drop"),
+                      d1_checks=("y", "n", "partly"), gaps=True),
 }
 
 
@@ -107,6 +117,7 @@ class _Open:
     snapshot_id: int
     answering: bool = False
     gates: dict[int, _Answer] = field(default_factory=dict)
+    gaps: _Answer | None = None
     d5: _Answer | None = None
     d1_check: _Answer | None = None
     notes: list[str] = field(default_factory=list)
@@ -204,6 +215,8 @@ def _labels(entry: _Open) -> tuple[JdLabel, ...]:
                        answer.rev)
 
     labels = [label(f"D2.G{n}", entry.gates[n], []) for n in sorted(entry.gates)]
+    if entry.gaps is not None:
+        labels.append(label("D5.gaps", entry.gaps, []))
     assert entry.d5 is not None
     labels.append(label("D5", entry.d5, entry.notes))
     if entry.d1_check is not None:
@@ -226,11 +239,13 @@ def parse_jd_sheet(path: Path, rubric_version: str) -> list[JdEntry]:
     def close() -> None:
         if current is None:
             return
-        gaps = [f"G{n}" for n in range(1, rubric.gates + 1) if n not in current.gates]
+        unanswered = [f"G{n}" for n in range(1, rubric.gates + 1) if n not in current.gates]
+        if rubric.gaps and current.gaps is None:
+            unanswered.append("gaps")
         if current.d5 is None:
-            gaps.append("D5")
-        if gaps:
-            missing.append(f"[{current.k}] {', '.join(gaps)}")
+            unanswered.append("D5")
+        if unanswered:
+            missing.append(f"[{current.k}] {', '.join(unanswered)}")
         else:
             entries.append(JdEntry(current.listing_id, current.snapshot_id, _labels(current)))
 
@@ -270,6 +285,15 @@ def parse_jd_sheet(path: Path, rubric_version: str) -> list[JdEntry]:
             text, rev = _without_rev(gate.group(3))
             value, comment = _gate(gate.group(2).strip(), text, rubric, where)
             current.gates[n] = _Answer(value, [comment, rev or ""], rev is not None)
+        elif rubric.gaps and line.startswith("gaps:"):
+            if current.gaps is not None:
+                raise FormatError(f"{where}: gaps answered twice in [{current.k}]")
+            text, rev = _without_rev(line.partition(":")[2])
+            if not _FIELD.match(text):
+                raise FormatError(f"{where}: gaps takes fields, e.g. 'core= a, b | context= c'")
+            value, comment = _gate("gaps", text, rubric, where)
+            del value["gate"]
+            current.gaps = _Answer(value, [comment, rev or ""], rev is not None)
         elif line.startswith("D5:") or line.startswith("D1-check:"):
             is_d5 = line.startswith("D5:")
             if (current.d5 if is_d5 else current.d1_check) is not None:

@@ -31,7 +31,10 @@ it, a run at a different effort level would silently mix into the baseline.
 ``"input_payload": {"listing_view": "v2"}`` - the version ``dme surfaced`` prints.
 Blind labels record theirs as the rubric version, and agreement is only measured
 between judgments made on the same information. Batches recorded before the
-requirement (the 2026-10-03 run, view v1) carry none.
+requirement (the 2026-10-03 run, view v1) carry none. **And the rubric they were
+made under**, as ``"rubric": "d2-v2"`` beside it: a rubric revision changes the
+tiers, so labels and decisions are compared within one version. Batches recorded
+before 2026-10-22 carry none; they were made under ``d2-v1``.
 
 **Format 2 is the decision log** that ``decide()`` writes (``decision_log.py``,
 ``client.py``). The header may add a ``"run"`` object. Decision lines name what they
@@ -66,6 +69,7 @@ FORMATS = (1, 2)
 INLINE_BACKEND = "claude-inline"
 _INLINE_MODEL = re.compile(r"^[\w.-]+/effort=(low|medium|high|xhigh|max)$")
 _LISTING_VIEW = re.compile(r"^v\d+$")
+_RUBRIC = re.compile(r"^d\d-v\d+$")
 _LABEL_REQUIRED = {"type", "listing", "decision_point", "labeler", "value", "saw_model_output"}
 _LABEL_OPTIONAL = {"snapshot_id", "sample", "rubric_version", "labeled_at", "note"}
 _EVENT_REQUIRED = {"type", "listing", "event", "at"}
@@ -214,6 +218,12 @@ def _insert_decision(conn: sqlite3.Connection, batch_id: int | None, rec: dict[s
             raise FormatError(
                 f"line {line}: {INLINE_BACKEND} decisions need input_payload "
                 f"{{\"listing_view\": \"v<N>\"}}, got {payload!r}"
+            )
+        rubric = payload.get("rubric") if isinstance(payload, dict) else None
+        if not _RUBRIC.match(str(rubric)):
+            raise FormatError(
+                f"line {line}: {INLINE_BACKEND} decisions need the rubric they were made "
+                f"under, input_payload \"rubric\": \"d<N>-v<N>\", got {payload!r}"
             )
     created_at = (
         jsonl.timestamp(rec["created_at"], line, "created_at")

@@ -139,6 +139,46 @@ def test_batch_differs_from_the_d1_sheet_of_the_same_sample(
     assert records[0]["batch_uuid"] != d1_batch["batch_uuid"]
 
 
+SHEET_V2 = (
+    SHEET.replace("# rubric_version: d2-v1", "# rubric_version: d2-v2")
+    .replace("    G6 down: pass [rev; was: fail?] reread it\n",
+             "    G6 down: cap-medium - \"10+ years\"\n")
+    .replace("    D5: medium\n",
+             "    gaps: core= a duty, another (pref) | context= startup years\n    D5: medium\n")
+    .replace("    D5: high\n", "    gaps: core= | context=\n    D5: high\n")
+    .replace("    ----- end JD -----\n",
+             "    ----- end JD -----\n    # G1 north    the criteria, reprinted\n")
+)
+
+
+def test_d2_v2_reads_gaps_and_cap_medium_and_skips_reprinted_criteria(
+    store: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    first, second = parse_jd_sheet(write_sheet(store, tmp_path / "s.txt", SHEET_V2), "d2-v2")
+    labels = {label.decision_point: label for label in first.labels}
+    assert labels["D2.G6"].value == {"gate": "down", "verdict": "cap-medium"}
+    assert labels["D5.gaps"].value == {"core": ["a duty", "another (pref)"],
+                                       "context": ["startup years"]}
+    assert "reprinted" not in (labels["D5"].note or "")
+    assert [label.decision_point for label in second.labels][-3:] == ["D5.gaps", "D5",
+                                                                     "D1-check"]
+    assert second.labels[-3].value == {"core": [], "context": []}
+
+
+def test_d2_v2_needs_a_gaps_line_and_d2_v1_never_reads_one(
+    store: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    sheet = SHEET_V2.replace("    gaps: core= | context=\n", "")
+    with pytest.raises(FormatError, match=r"no answer for \[2\] gaps"):
+        parse_jd_sheet(write_sheet(store, tmp_path / "s.txt", sheet), "d2-v2")
+    sheet = SHEET_V2.replace("gaps: core= | context=", "gaps: none")
+    with pytest.raises(FormatError, match="gaps takes fields"):
+        parse_jd_sheet(write_sheet(store, tmp_path / "s.txt", sheet), "d2-v2")
+    v1 = SHEET.replace("    D5: high\n", "    gaps: core= x | context=\n    D5: high\n")
+    _, second = parse_jd_sheet(write_sheet(store, tmp_path / "s.txt", v1), "d2-v1")
+    assert "D5.gaps" not in {label.decision_point for label in second.labels}
+
+
 def test_unknown_rubric_version_is_refused(store: sqlite3.Connection, tmp_path: Path) -> None:
     with pytest.raises(FormatError, match="no JD-sheet format for rubric_version 'd2-v9'"):
         parse_jd_sheet(write_sheet(store, tmp_path / "s.txt"), "d2-v9")

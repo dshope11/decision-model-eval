@@ -53,11 +53,13 @@ decision-model-eval/
     surfaced.py               <- what recent runs let through, one row per posting, with
                                  store ids, new vs seen
     sample.py                 <- seeded blind label draws, the label sheet, sheet -> label records
+    jd_sheet.py               <- the D2+D5 JD sheet -> gate, D5 and D1-check label records,
+                                 read under the sheet's rubric version
     view.py                   <- the listing view shown to labelers and triage alike
     ats.py                    <- ATS identity (greenhouse / ashby / lever / waas) from a URL
     jsonl.py                  <- strict JSONL reading and field validation
     cli.py                    <- the `dme` command
-  scripts/                    <- interim stand-alone helpers, until dme label reads D2/D5:
+  scripts/                    <- interim stand-alone helpers:
     jd_to_text.py             <-   a fetched non-WaaS JD (iCIMS / SmartRecruiters / Greenhouse /
                                    Ashby) -> plain text
     reveal_d1.py              <-   a recorded blind sample's D1 labels against the pipeline's call
@@ -92,7 +94,7 @@ calls go through `client.decide()`; its log format is in the docstrings of `clie
 and `decision_log.py`, and tests replay canned live responses (`tests/conftest.py`), so
 the suite never touches the network. The JSONL formats
 it reads are specified in the docstrings of `ingest.py` and `record.py`; the label-sheet
-format in `sample.py`. **Blind samples draw from everything the runs sighted, filter
+formats in `sample.py` (D1) and `jd_sheet.py` (D2+D5). **Blind samples draw from everything the runs sighted, filter
 rejects included, and the sheet shows the listing view only** - never a tier, a filter
 verdict or any model output, which is what makes `saw_model_output: false` true. The
 view (`view.py`) is shared by the sheets and `dme surfaced`, so blind labels and

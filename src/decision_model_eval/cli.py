@@ -14,8 +14,9 @@
                                       listings already labeled in a sample, or on a
                                       sheet beside SHEET, are skipped
     dme label SHEET --labeler NAME [--rubric-version V]
-                                      record a filled label sheet; the rubric comes
-                                      from the sheet header when it has one
+                                      record a filled label sheet - a D1 sheet or a
+                                      D2+D5 JD sheet; the rubric comes from the sheet
+                                      header when it has one
     dme preselection add NAME --config FILE --effective-from DATE [--note TEXT]
     dme preselection list
     dme scifact download              fetch the pinned SciFact release into scifact_dir
@@ -48,6 +49,7 @@ from decision_model_eval.backends import BACKENDS
 from decision_model_eval.config import REPO_ROOT, EvalConfig, load_config
 from decision_model_eval.decision_log import DecisionLog
 from decision_model_eval.ingest import ingest_file
+from decision_model_eval.jd_sheet import JD_SHEET_POINT, jd_sheet_records, parse_jd_sheet
 from decision_model_eval.jsonl import FormatError, timestamp
 from decision_model_eval.record import record_file
 from decision_model_eval.replay import replay
@@ -182,6 +184,9 @@ def _sample(config: EvalConfig, args: argparse.Namespace) -> int:
 
 def _label(config: EvalConfig, args: argparse.Namespace) -> int:
     sheet = Path(args.sheet)
+    header = sheet_header(sheet)
+    if header.get("decision_point") == JD_SHEET_POINT:
+        return _label_jd_sheet(config, args, sheet, header)
     meta, entries = parse_sheet(sheet)
     records = sheet_records(meta, entries, labeler=args.labeler,
                             rubric_version=resolve_rubric(meta, args.rubric_version))
@@ -193,6 +198,23 @@ def _label(config: EvalConfig, args: argparse.Namespace) -> int:
     else:
         yes = sum(e.answer for e in entries)
         print(f"{sheet}: {result.labels} labels recorded ({yes} y, {len(entries) - yes} n)")
+    return 0
+
+
+def _label_jd_sheet(config: EvalConfig, args: argparse.Namespace, sheet: Path,
+                    meta: dict[str, str]) -> int:
+    rubric = resolve_rubric(meta, args.rubric_version)
+    entries = parse_jd_sheet(sheet, rubric)
+    records = jd_sheet_records(meta, entries, labeler=args.labeler, rubric_version=rubric)
+    path = sheet.with_suffix(".labels.jsonl")
+    path.write_text("".join(json.dumps(r) + "\n" for r in records))
+    result = record_file(_open(config), path)
+    if result.already_recorded:
+        print(f"{sheet}: already recorded (batch {result.batch_uuid}) - skipped")
+    else:
+        revised = sum(bool(r.get("saw_model_output")) for r in records)
+        print(f"{sheet}: {result.labels} labels recorded from {len(entries)} JDs; "
+              f"{revised} from [rev] lines carry saw_model_output")
     return 0
 
 

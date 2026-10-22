@@ -238,16 +238,20 @@ def parse_sheet(path: Path) -> tuple[dict[str, str], list[SheetEntry]]:
     return meta, entries
 
 
+def sheet_batch(name: str, decision_point: str, labeler: str) -> dict[str, Any]:
+    """The batch record opening a sheet's annotations file. Its UUID is derived from
+    the sample name, decision point and labeler, so re-recording a sheet is a no-op."""
+    batch = uuid.uuid5(_NAMESPACE, f"{name}|{decision_point}|{labeler}")
+    return {"type": "batch", "format": 1, "batch_uuid": str(batch),
+            "origin": f"dme label {name}"}
+
+
 def sheet_records(meta: dict[str, str], entries: list[SheetEntry], *, labeler: str,
                   rubric_version: str | None) -> list[dict[str, Any]]:
     """A ``dme record`` annotations file for a filled sheet. The labels record
     ``saw_model_output: false`` - the sheet never shows model output."""
     name, point = meta["sample"], meta["decision_point"]
-    batch = uuid.uuid5(_NAMESPACE, f"{name}|{point}|{labeler}")
-    records: list[dict[str, Any]] = [
-        {"type": "batch", "format": 1, "batch_uuid": str(batch),
-         "origin": f"dme label {name}"},
-    ]
+    records: list[dict[str, Any]] = [sheet_batch(name, point, labeler)]
     for entry in entries:
         record: dict[str, Any] = {
             "type": "label", "listing": {"listing_id": entry.listing_id},

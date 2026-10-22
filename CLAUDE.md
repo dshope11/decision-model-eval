@@ -50,7 +50,8 @@ decision-model-eval/
     store.py                  <- connect (foreign keys on, WAL), migrate, VACUUM INTO backups
     ingest.py                 <- fetch-script JSONL -> runs, listings, snapshots, sightings
     record.py                 <- decisions / labels / pipeline events JSONL, and decision logs
-    surfaced.py               <- what recent runs let through, with store ids, new vs seen
+    surfaced.py               <- what recent runs let through, one row per posting, with
+                                 store ids, new vs seen
     sample.py                 <- seeded blind label draws, the label sheet, sheet -> label records
     view.py                   <- the listing view shown to labelers and triage alike
     ats.py                    <- ATS identity (greenhouse / ashby / lever / waas) from a URL

@@ -100,13 +100,16 @@ def _ingest(config: EvalConfig, args: argparse.Namespace) -> int:
 def _surfaced(config: EvalConfig, args: argparse.Namespace) -> int:
     rows = surfaced(_open(config), timestamp(args.since, 0, "--since"))
     for row in rows:
-        fields = [f"L{row.listing_id}", "NEW " if row.new else "seen", row.source,
+        source = row.source + "".join(f" +L{i} {s}" for i, s in row.also)
+        fields = [f"L{row.listing_id}", "NEW " if row.new else "seen", source,
                   row.view.company, row.view.title, row.view.location,
                   "; ".join(row.view.details), row.url or ""]
         print(" | ".join(fields))
     new = sum(row.new for row in rows)
-    print(f"[{len(rows)} listings passed the script filters: {new} new, "
-          f"{len(rows) - new} seen in earlier runs; listing view {VIEW_VERSION}]",
+    folded = sum(len(row.also) for row in rows)
+    print(f"[{len(rows)} postings passed the script filters: {new} new, "
+          f"{len(rows) - new} seen in earlier runs; {folded} more listings of them "
+          f"from other sources folded in; listing view {VIEW_VERSION}]",
           file=sys.stderr)
     return 0
 

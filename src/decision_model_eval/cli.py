@@ -95,7 +95,8 @@ def _ingest(config: EvalConfig, args: argparse.Namespace) -> int:
             print(f"{path}: {result.hits} hits -> {result.new_listings} new listings, "
                   f"{result.new_snapshots} new snapshots, {result.new_sightings} sightings")
     if not args.no_backup:
-        print(f"backup: {backup(conn, config.backup_dir, config.keep_backups)}")
+        print(f"backup: {backup(conn, config.backup_dir, config.keep_backups,
+                                config.keep_backup_days)}")
     return 0
 
 
@@ -306,7 +307,8 @@ def _scifact_report(config: EvalConfig, args: argparse.Namespace) -> int:
 
 
 def _backup(config: EvalConfig, _: argparse.Namespace) -> int:
-    print(backup(_open(config), config.backup_dir, config.keep_backups))
+    print(backup(_open(config), config.backup_dir, config.keep_backups,
+                 config.keep_backup_days))
     return 0
 
 

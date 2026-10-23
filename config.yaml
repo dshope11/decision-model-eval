@@ -5,7 +5,10 @@ db_path: ~/.local/share/decision-model-eval/listings.db
 # Consistent copies from `dme backup`, written after every ingest. Local until an
 # off-site target is chosen.
 backup_dir: ~/.local/share/decision-model-eval/backups
-keep_backups: 8
+# Kept: the 3 newest copies, the newest of each of the last 14 days, the newest of
+# every month.
+keep_backups: 3
+keep_backup_days: 14
 random_seed: 42
 
 # Keys into the registry in src/decision_model_eval/backends.py

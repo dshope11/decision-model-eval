@@ -87,6 +87,17 @@ mypy src/ tests/
 the agent in the same turn. It only fires in a session started in this repo; from
 another working directory, run the three by hand.
 
+- **Never add an import in an edit of its own before the code that uses it.** The
+  hook's `ruff --fix` deletes it as unused at once. Put the import in the same edit
+  as its first use, or add it after the use exists.
+- **The hook runs per edit, not per change.** A change spread over several edits
+  fails in between (a call before its import, a test still asserting the old
+  behavior); only the run after the last edit counts. Keep a change's code, tests
+  and imports in as few edits as practical, so a real failure isn't lost in noise.
+- **Read the store from Python with `file:<path>?mode=ro`, not `sqlite3 -readonly`.**
+  The store is in WAL mode, and the CLI's read-only open fails ("unable to open
+  database file") whenever the `-shm` file is absent, as after a clean close.
+
 The store is driven by the `dme` command (`dme --help`): `init`, `ingest`, `surfaced`,
 `record`, `replay`, `sample`, `label`, `preselection add|list`, `scifact download|run|report`,
 `backup`, `stats`. Model

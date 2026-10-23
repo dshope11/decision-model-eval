@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from importlib import resources
 from pathlib import Path
 
@@ -90,31 +90,42 @@ def _statements(sql: str) -> list[str]:
     return statements
 
 
-def backup(conn: sqlite3.Connection, backup_dir: str | Path, keep_recent: int = 8) -> Path:
+def backup(conn: sqlite3.Connection, backup_dir: str | Path, keep_recent: int = 3,
+           keep_days: int = 14) -> Path:
     """Write a consistent copy of the store with ``VACUUM INTO`` and prune old copies.
 
     The copy is a single self-contained file, safe to sync or upload. The live
     database is not: syncing it mid-write, or apart from its WAL files, can
-    corrupt it. Keeps the ``keep_recent`` newest copies plus the newest copy of
-    every month.
+    corrupt it. Retention is ``prune_backups``'s rule.
     """
     backup_dir = Path(backup_dir).expanduser()
     backup_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     target = backup_dir / f"listings-{stamp}.db"
     conn.execute("VACUUM INTO ?", (str(target),))
-    prune_backups(backup_dir, keep_recent)
+    prune_backups(backup_dir, keep_recent, keep_days)
     return target
 
 
-def prune_backups(backup_dir: Path, keep_recent: int) -> list[Path]:
-    """Delete backups outside the retention rule. Returns the deleted paths."""
+def prune_backups(backup_dir: Path, keep_recent: int, keep_days: int = 14,
+                  today: date | None = None) -> list[Path]:
+    """Delete backups outside the retention rule and return them. Kept: the
+    ``keep_recent`` newest copies, so a bad write can be rolled back the same day;
+    the newest copy of each of the last ``keep_days`` days (UTC, today included),
+    since a backup is taken before every store write and several can land in one
+    day; and the newest copy of every month."""
     copies = sorted(backup_dir.glob("listings-*.db"), reverse=True)  # newest first
     keep = set(copies[:keep_recent])
+    first_day = ((today or datetime.now(UTC).date())
+                 - timedelta(days=keep_days - 1)).strftime("%Y%m%d")
+    newest_per_day: dict[str, Path] = {}
     newest_per_month: dict[str, Path] = {}
     for copy in copies:
-        newest_per_month.setdefault(copy.name[len("listings-"):][:6], copy)  # YYYYMM
-    keep |= set(newest_per_month.values())
+        stamp = copy.name[len("listings-"):]
+        newest_per_month.setdefault(stamp[:6], copy)  # YYYYMM
+        if stamp[:8] >= first_day:
+            newest_per_day.setdefault(stamp[:8], copy)  # YYYYMMDD
+    keep |= set(newest_per_day.values()) | set(newest_per_month.values())
     deleted = [copy for copy in copies if copy not in keep]
     for copy in deleted:
         copy.unlink()

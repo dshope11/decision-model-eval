@@ -28,7 +28,8 @@ class EvalConfig:
     # Consistent copies written by `dme backup` (and after every ingest). Point this
     # at an off-site synced folder; never point db_path at one.
     backup_dir: str = "~/.local/share/decision-model-eval/backups"
-    keep_backups: int = 8
+    keep_backups: int = 3  # the newest copies, whatever their day
+    keep_backup_days: int = 14  # plus the newest copy of each of these last days
     random_seed: int = 42
     backends: list[str] = field(default_factory=lambda: ["jev", "haiku"])
     labeler: str = "opus"
@@ -44,6 +45,9 @@ class EvalConfig:
             )
         if self.keep_backups < 1:
             raise ValueError(f"keep_backups must be at least 1, got {self.keep_backups}")
+        if self.keep_backup_days < 0:
+            raise ValueError(
+                f"keep_backup_days must be non-negative, got {self.keep_backup_days}")
 
         if self.random_seed < 0:
             raise ValueError(f"random_seed must be non-negative, got {self.random_seed}")

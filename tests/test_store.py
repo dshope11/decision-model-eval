@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -56,6 +57,26 @@ def test_backup_is_a_complete_readable_copy(conn: sqlite3.Connection, tmp_path: 
     restored = sqlite3.connect(copy)
     assert restored.execute("SELECT COUNT(*) FROM listings").fetchone()[0] == 1
     assert restored.execute("PRAGMA user_version").fetchone()[0] == len(migrations())
+
+
+def test_prune_keeps_recent_newest_per_day_for_the_window_and_per_month(
+    tmp_path: Path,
+) -> None:
+    names = [
+        "listings-20260930T120000Z.db",                                  # September
+        "listings-20261008T090000Z.db", "listings-20261008T180000Z.db",  # before the window
+        "listings-20261020T090000Z.db", "listings-20261020T180000Z.db",  # in the window
+        "listings-20261022T010000Z.db", "listings-20261022T020000Z.db",
+        "listings-20261022T030000Z.db", "listings-20261022T040000Z.db",  # today
+    ]
+    for name in names:
+        (tmp_path / name).write_bytes(b"")
+    prune_backups(tmp_path, keep_recent=2, keep_days=14, today=date(2026, 10, 22))
+    assert sorted(p.name for p in tmp_path.glob("listings-*.db")) == [
+        "listings-20260930T120000Z.db",  # newest of September
+        "listings-20261020T180000Z.db",  # newest of 10/20; 10/09-10/22 is the window
+        "listings-20261022T030000Z.db", "listings-20261022T040000Z.db",  # 2 newest
+    ]
 
 
 def test_prune_keeps_recent_and_newest_per_month(tmp_path: Path) -> None:

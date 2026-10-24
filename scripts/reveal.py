@@ -1,7 +1,9 @@
-"""Print the D1 reveal for a recorded blind sample: David's D1 labels against the
-pipeline's own D1 call, as one Markdown table of every item either side said y.
+"""Print the reveal for a recorded blind sample: David's D1 labels against the
+pipeline's own D1 call, as one Markdown table of every item either side said y,
+and - when the sample has a recorded JD sheet - his D2 + D5 labels against the
+pipeline's JD reads.
 
-Usage: python -I reveal_d1.py SHEET [--time 14m54s] [--out SHEET_STEM.reveal.md]
+Usage: python -I reveal.py SHEET [--time 14m54s] [--out SHEET_STEM.reveal.md]
 
 The pipeline's D1 is "passed the script filter AND listing-line tier Medium or
 higher" - the definition the W41 reveal used. A filter reject counts as n. Tiers
@@ -15,6 +17,14 @@ for the session to fill in: confirmed / contradicted / JD didn't settle it.
 
 A stratified sample's labels carry ``<sample>/<stratum>``; the headline then adds
 the agreement within each stratum. No combined weighted estimate is made here.
+
+When the sample also has JD-sheet labels, a second section, "D2 + D5 on the JD",
+sets David's D5, gates and gaps against the pipeline's JD read of the same listing
+(the run's own, or a post-reveal one). The pipeline records a tier and its gaps,
+not per-gate verdicts, so D2 is compared only as "a gate killed it" (any gate fail
+of his vs the pipeline's Drop). His D5 scale is very-high / high / medium / drop,
+and the pipeline's Low and Drop both count as drop. Agreement counts only rows read
+under one rubric version and labels that saw no model output ([rev]).
 """
 import argparse
 import json
@@ -27,6 +37,10 @@ from decision_model_eval.sample import sheet_header
 from decision_model_eval.view import listing_view
 
 READ_TIERS = {"Very High", "High", "Medium"}
+# The pipeline's tiers on David's JD-sheet D5 scale; Low and Drop are both "drop".
+PIPELINE_D5 = {"Very High": "very-high", "High": "high", "Medium": "medium",
+               "Low": "drop", "Drop": "drop"}
+HIGH_PLUS = {"very-high", "high"}
 _DRAWN = re.compile(r"since (\S+?)(?: and before (\S+?))?,")
 _ENTRY = re.compile(r"^\[(\d+)\] L(\d+) S(\d+)$")
 # Disagreements first, then agreements on y.
@@ -67,16 +81,141 @@ def run_batches(conn: sqlite3.Connection, since: str, labels_at: str) -> list[sq
 
 def decision(conn: sqlite3.Connection, listing_id: int, basis: str,
              batch_clause: str, *args) -> dict | None:
+    """The latest matching decision's output, with its rubric version as ``_rubric``."""
     row = conn.execute(
         f"""
-        SELECT d.output FROM decisions d JOIN snapshots sn ON sn.id = d.snapshot_id
+        SELECT d.output, d.input_payload FROM decisions d
+        JOIN snapshots sn ON sn.id = d.snapshot_id
         WHERE sn.listing_id = ? AND d.backend = 'claude-inline'
           AND json_extract(d.output, '$.basis') = ? AND {batch_clause}
         ORDER BY d.id DESC LIMIT 1
         """,
         (listing_id, basis, *args),
     ).fetchone()
-    return json.loads(row["output"]) if row else None
+    if row is None:
+        return None
+    output = json.loads(row["output"])
+    output["_rubric"] = json.loads(row["input_payload"] or "{}").get("rubric")
+    return output
+
+
+def jd_labels(conn: sqlite3.Connection, sample: str) -> dict[int, dict]:
+    """David's JD-sheet labels per listing: D5, D5.gaps and the D2.G<n> gates, the
+    rubric they were read under, and which of them saw model output ([rev])."""
+    rows = conn.execute(
+        """
+        SELECT sn.listing_id, la.decision_point, la.value, la.saw_model_output,
+               la.rubric_version
+        FROM labels la JOIN snapshots sn ON sn.id = la.snapshot_id
+        WHERE (la.sample = ? OR substr(la.sample, 1, ?) = ?) AND la.labeler = 'david'
+          AND (la.decision_point IN ('D5', 'D5.gaps') OR la.decision_point LIKE 'D2.G%')
+        """,
+        (sample, len(sample) + 1, f"{sample}/"),
+    ).fetchall()
+    out: dict[int, dict] = {}
+    for r in rows:
+        entry = out.setdefault(r["listing_id"], {"gates": {}, "rev": set()})
+        point, value = r["decision_point"], json.loads(r["value"])
+        entry["rubric"] = r["rubric_version"]
+        if r["saw_model_output"]:
+            entry["rev"].add(point)
+        if point == "D5":
+            entry["d5"] = value
+        elif point == "D5.gaps":
+            entry["gaps"] = value
+        else:
+            entry["gates"][point.removeprefix("D2.")] = value
+    return {lid: e for lid, e in out.items() if "d5" in e}
+
+
+def gate_summary(gates: dict[str, dict]) -> tuple[str, bool]:
+    """(cell text, killed): every gate that did not plainly pass, and whether any
+    gate failed outright - a fail verdict, or a publication bar he doesn't clear."""
+    marks, killed = [], False
+    for name in sorted(gates, key=lambda g: int(g[1:])):
+        g = gates[name]
+        verdict = g.get("verdict", "pass")
+        if g.get("clears") == "n":
+            verdict = "fail"
+        killed = killed or verdict == "fail"
+        mark = f"{name} {verdict}" if verdict != "pass" else ""
+        if g.get("ext_fail"):
+            mark = f"{name} ext-fail"
+        if mark and g.get("unsure"):
+            mark += "?"
+        if mark:
+            marks.append(mark)
+    return ("; ".join(marks) or "all pass"), killed
+
+
+def gaps_cell(gaps: dict | None) -> str:
+    if not gaps:
+        return "-"
+    core, context = gaps.get("core", []), gaps.get("context", [])
+    return f"{len(core)} core ({'; '.join(core) or 'none'}) / {len(context)} context"
+
+
+def jd_section(items: list[dict], mine: dict[int, dict]) -> list[str]:
+    """The D2 + D5 comparison: David's JD-sheet labels against the pipeline's JD read
+    on the same listing. Agreement counts only rows read under one rubric version
+    and labels that saw no model output."""
+    rows = []
+    for i in sorted((i for i in items if i["lid"] in mine), key=lambda i: i["k"]):
+        me, jd = mine[i["lid"]], i["jd_dec"]
+        gates, killed = gate_summary(me["gates"])
+        pipe = PIPELINE_D5.get(jd["tier"]) if jd else None
+        same = jd is not None and jd.get("_rubric") == me["rubric"]
+        rows.append({**i, "me": me, "gates": gates, "killed": killed, "pipe_d5": pipe,
+                     "same": same})
+
+    def counts(group: list[dict]) -> list[str]:
+        d5 = [r for r in group if r["same"] and "D5" not in r["me"]["rev"]]
+        exact = sum(r["me"]["d5"] == r["pipe_d5"] for r in d5)
+        hi = [(r["me"]["d5"] in HIGH_PLUS, r["pipe_d5"] in HIGH_PLUS) for r in d5]
+        hi_agree = sum(a == b for a, b in hi)
+        you_only = sum(a and not b for a, b in hi)
+        pipe_only = sum(b and not a for a, b in hi)
+        kill = [r for r in group if r["same"]
+                and not any(p.startswith("D2.") for p in r["me"]["rev"])]
+        kill_agree = sum(r["killed"] == (r["jd_dec"]["tier"] == "Drop") for r in kill)
+        gapped = [r for r in d5 if r["me"].get("gaps") and r["jd_dec"].get("gaps")]
+        gap_agree = sum(len(r["me"]["gaps"].get("core", []))
+                        == len(r["jd_dec"]["gaps"].get("core", [])) for r in gapped)
+        return [f"D5 exact {exact}/{len(d5)}",
+                f"High or above {hi_agree}/{len(d5)} (you only {you_only}, "
+                f"pipeline only {pipe_only})",
+                f"gate kill {kill_agree}/{len(kill)}",
+                f"core-gap count {gap_agree}/{len(gapped)}"]
+
+    skipped = len(rows) - sum(r["same"] for r in rows)
+    out = ["", "## D2 + D5 on the JD", "",
+           f"- {len(rows)} JDs labeled; compared where the pipeline read the same JD under "
+           f"the same rubric ({skipped} not comparable: no pipeline read, or another rubric)",
+           f"- {' | '.join(counts(rows))}"]
+    for stratum in sorted({r["stratum"] for r in rows if r["stratum"]}):
+        group = [r for r in rows if r["stratum"] == stratum]
+        out.append(f"  - {stratum} stratum ({len(group)}): {' | '.join(counts(group))}")
+    out += ["- Your D5 scale is very-high / high / medium / drop; the pipeline's Low and "
+            "Drop both count as drop. Gate kill = any gate fail of yours vs the pipeline's "
+            "Drop. Labels marked [rev] saw model output and are left out of the counts.",
+            "",
+            "| # | Listing | Your D5 | Your gates | Your gaps | Pipeline JD read | "
+            "Pipeline gaps |",
+            "|---|---|---|---|---|---|---|"]
+    for r in rows:
+        me, jd = r["me"], r["jd_dec"]
+        d5 = me["d5"] + (" [rev]" if "D5" in me["rev"] else "")
+        gates = r["gates"] + (" [rev]" if any(p.startswith("D2.") for p in me["rev"]) else "")
+        if jd is None:
+            read = "not read"
+        else:
+            read = f"{jd['tier']}{' (post-reveal)' if r['post_reveal'] else ''}: {jd['reason']}"
+            if not r["same"]:
+                read += f" [rubric {jd.get('_rubric')} vs your {me['rubric']}]"
+        out.append(f"| {r['k']} | {cell(r['listing'])} | {d5} | {cell(gates)} "
+                   f"| {cell(gaps_cell(me.get('gaps')))} | {cell(read)} "
+                   f"| {cell(gaps_cell(jd.get('gaps') if jd else None))} |")
+    return out
 
 
 def next_run_at(conn: sqlite3.Connection, before: str | None) -> str:
@@ -177,6 +316,9 @@ def main() -> None:
             "you": json.loads(la["value"]) is True,
             "pipe": passed and line is not None and line["tier"] in READ_TIERS,
             "passed": passed,
+            "lid": lid,
+            "jd_dec": jd,
+            "post_reveal": post_reveal,
             "stratum": la["sample"].partition("/")[2],
             "note": la["note"],
             "at_line": at_line,
@@ -225,6 +367,10 @@ def main() -> None:
             out.append(f"| {i['k']} | {cell(i['listing'])} | {yn(i['you'])} / {yn(i['pipe'])} "
                        f"| {cell(i['note'])} | {cell(i['at_line'])} | {cell(i['jd'])} "
                        f"| {verdict} |")
+
+    mine = jd_labels(conn, sample)
+    if mine:
+        out += jd_section(items, mine)
 
     acted = [i for i in items if i["events"]]
     if acted:

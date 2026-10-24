@@ -62,7 +62,8 @@ decision-model-eval/
   scripts/                    <- interim stand-alone helpers:
     jd_to_text.py             <-   a fetched non-WaaS JD (iCIMS / SmartRecruiters / Greenhouse /
                                    Ashby) -> plain text
-    reveal_d1.py              <-   a recorded blind sample's D1 labels against the pipeline's call
+    reveal.py                 <-   a recorded blind sample's D1 labels, and its JD sheet's D2 + D5
+                                   labels, against the pipeline's own calls
                                  (the stage-2 sheet builder lives with the private label sheets)
   results/scifact/            <- the control run's aggregate report, copied from its run dir;
                                  never items.jsonl or the decision logs (per-item model outputs)

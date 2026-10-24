@@ -5,13 +5,16 @@ Usage: python -I reveal_d1.py SHEET [--time 14m54s] [--out SHEET_STEM.reveal.md]
 
 The pipeline's D1 is "passed the script filter AND listing-line tier Medium or
 higher" - the definition the W41 reveal used. A filter reject counts as n. Tiers
-come from the first claude-inline batch recorded after the sample's window opened
-(the run's own triage); a listing that batch carried only as jd-verified falls back
-to its latest earlier listing-line decision, marked "(earlier)". A JD read recorded
-after the run's batch but before the next run is shown "(post-reveal)". Both-n items are
-counted, not listed. The last column, "JD vs your call", reads "not read" where no
-JD was read and is otherwise left blank for the session to fill in: confirmed /
-contradicted / JD didn't settle it.
+come from the claude-inline batches recorded after the sample's window opened and
+before its labels were (the run's own triage, one batch per pass); a listing those
+batches carried only as jd-verified falls back to its latest earlier listing-line
+decision, marked "(earlier)". A JD read recorded after the labels but before the next
+run is shown "(post-reveal)". Both-n items are counted, not listed. The last column,
+"JD vs your call", reads "not read" where no JD was read and is otherwise left blank
+for the session to fill in: confirmed / contradicted / JD didn't settle it.
+
+A stratified sample's labels carry ``<sample>/<stratum>``; the headline then adds
+the agreement within each stratum. No combined weighted estimate is made here.
 """
 import argparse
 import json
@@ -48,16 +51,18 @@ def sheet_order(sheet: Path) -> dict[int, int]:
     return order
 
 
-def run_batch(conn: sqlite3.Connection, since: str) -> sqlite3.Row:
+def run_batches(conn: sqlite3.Connection, since: str, labels_at: str) -> list[sqlite3.Row]:
+    """The run's own triage: every claude-inline batch recorded after the window
+    opened and before the sample's labels were - one per pass when a run has two."""
     return conn.execute(
         """
         SELECT b.id, b.batch_uuid, b.recorded_at FROM record_batches b
-        WHERE b.recorded_at >= ? AND EXISTS (
+        WHERE b.recorded_at >= ? AND b.recorded_at < ? AND EXISTS (
             SELECT 1 FROM decisions d WHERE d.batch_id = b.id AND d.backend = 'claude-inline')
-        ORDER BY b.recorded_at LIMIT 1
+        ORDER BY b.recorded_at
         """,
-        (since,),
-    ).fetchone()
+        (since, labels_at),
+    ).fetchall()
 
 
 def decision(conn: sqlite3.Connection, listing_id: int, basis: str,
@@ -115,16 +120,24 @@ def main() -> None:
 
     conn = sqlite3.connect(Path(load_config().db_path).expanduser())
     conn.row_factory = sqlite3.Row
-    batch = run_batch(conn, since)
     next_run = next_run_at(conn, before)
     labels = conn.execute(
         """
-        SELECT sn.listing_id, la.snapshot_id, la.value, la.note
+        SELECT sn.listing_id, la.snapshot_id, la.value, la.note, la.sample,
+               b.recorded_at
         FROM labels la JOIN snapshots sn ON sn.id = la.snapshot_id
-        WHERE la.sample = ? AND la.decision_point = 'D1' AND la.labeler = 'david'
+        JOIN record_batches b ON b.id = la.batch_id
+        WHERE (la.sample = ? OR substr(la.sample, 1, ?) = ?)
+          AND la.decision_point = 'D1' AND la.labeler = 'david'
         """,
-        (sample,),
+        (sample, len(sample) + 1, f"{sample}/"),
     ).fetchall()
+    if not labels:
+        raise SystemExit(f"no recorded D1 labels for {sample}")
+    labels_at = min(la["recorded_at"] for la in labels)
+    batches = run_batches(conn, since, labels_at)
+    in_run = (f"d.batch_id IN ({', '.join(str(b['id']) for b in batches)})"
+              if batches else "0")
 
     items = []
     for la in labels:
@@ -133,18 +146,18 @@ def main() -> None:
         line = jd = None
         earlier = post_reveal = False
         if passed:
-            line = decision(conn, lid, "listing-line", "d.batch_id = ?", batch["id"])
-            jd = decision(conn, lid, "jd-verified", "d.batch_id = ?", batch["id"])
+            line = decision(conn, lid, "listing-line", in_run)
+            jd = decision(conn, lid, "jd-verified", in_run)
             if line is None:
                 line = decision(conn, lid, "listing-line", "d.batch_id IN (SELECT id FROM "
-                                "record_batches WHERE recorded_at < ?)", batch["recorded_at"])
+                                "record_batches WHERE recorded_at < ?)", since)
                 earlier = line is not None
         if jd is None:
             # A JD read after the reveal (Phase 3 step 0), in a later batch but before
             # the next run - the pipeline would not have read it on its own.
             jd = decision(conn, lid, "jd-verified", "d.batch_id IN (SELECT id FROM "
                           "record_batches WHERE recorded_at > ? AND recorded_at < ?)",
-                          batch["recorded_at"], next_run)
+                          labels_at, next_run)
             post_reveal = jd is not None
         if not passed:
             at_line = f"filter reject: {reason}"
@@ -164,6 +177,7 @@ def main() -> None:
             "you": json.loads(la["value"]) is True,
             "pipe": passed and line is not None and line["tier"] in READ_TIERS,
             "passed": passed,
+            "stratum": la["sample"].partition("/")[2],
             "note": la["note"],
             "at_line": at_line,
             "jd": (f"{jd['tier']}{' (post-reveal)' if post_reveal else ''}: {jd['reason']}"
@@ -172,22 +186,33 @@ def main() -> None:
         })
     items.sort(key=lambda i: i["k"])
 
+    def agreement(group: list[dict]) -> str:
+        count = {g: sum(1 for i in group if (i["you"], i["pipe"]) == g)
+                 for g in _GROUPS + [(False, False)]}
+        return (f"Agree {count[(True, True)] + count[(False, False)]}/{len(group)} "
+                f"(both y {count[(True, True)]}, both n {count[(False, False)]}) | "
+                f"you y / pipeline n: {count[(True, False)]} | "
+                f"you n / pipeline y: {count[(False, True)]}")
+
     n = len(items)
-    count = {g: sum(1 for i in items if (i["you"], i["pipe"]) == g)
-             for g in _GROUPS + [(False, False)]}
     you_y = sum(i["you"] for i in items)
     rejected = sum(not i["passed"] for i in items)
     took = f", {args.time}" if args.time else ""
+    ids = ", ".join(b["batch_uuid"][:8] for b in batches) or "none"
     out = [
         f"# D1 reveal - {sample}",
         "",
         f"- {n} items{took}, you {you_y} y / {n - you_y} n",
         "- Pipeline's D1 = passed the filter AND listing-line tier Medium or higher "
-        f"(decisions: batch {batch['batch_uuid'][:8]})",
-        f"- Agree {count[(True, True)] + count[(False, False)]}/{n} "
-        f"(both y {count[(True, True)]}, both n {count[(False, False)]}) | "
-        f"you y / pipeline n: {count[(True, False)]} | "
-        f"you n / pipeline y: {count[(False, True)]}",
+        f"(decisions: batch{'es' if len(batches) > 1 else ''} {ids})",
+        f"- {agreement(items)}",
+    ]
+    for stratum in sorted({i["stratum"] for i in items if i["stratum"]}):
+        group = [i for i in items if i["stratum"] == stratum]
+        y = sum(i["you"] for i in group)
+        out.append(f"  - {stratum} stratum ({len(group)} items, you {y} y): "
+                   f"{agreement(group)}")
+    out += [
         f"- Filter: {rejected} rejected, {n - rejected} tiered",
         "",
         "| # | Listing | You / Pipeline | Your note | Pipeline at listing line "

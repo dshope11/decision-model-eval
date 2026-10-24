@@ -27,6 +27,17 @@ Sheet format (plain text, edited in any editor)::
 The answer goes after ``D1:`` (``y`` or ``n``, with a trailing ``?`` for an unsure
 call); ``note:`` is optional. Every line below the answer is kept in the recorded
 note, so tags such as ``explore: ...`` survive; an unsure call adds ``unsure``.
+
+A stratified sheet (``dme sample --strata passed=20,rejected=10``) draws each
+stratum separately from a closed window: ``passed`` is every listing with a sighting
+that passed the filters in the window, ``rejected`` the rest, so the strata are
+disjoint. The passed stratum is where labels overlap the pipeline's own decisions;
+the rejected one is where the filters' recall is measured. The sheet shuffles the
+strata together and its header gives only their totals, so no entry shows its
+filter verdict. ``dme label`` recomputes each listing's stratum from the window and
+records it in the label's ``sample`` field as ``<name>/<stratum>``. Estimates are
+made per stratum; a combined estimate weights each stratum by its size over its
+draw, and never pools the labels raw.
 """
 
 from __future__ import annotations
@@ -46,6 +57,8 @@ from decision_model_eval.view import ListingView, listing_view
 _NAMESPACE = uuid.UUID("6f1d3c2a-7b4e-4d8a-9c5f-2e1a0b9d8c7e")
 _ENTRY = re.compile(r"^\[(\d+)\] L(\d+) S(\d+)$")
 _ANSWERS = {"y": True, "yes": True, "n": False, "no": False}
+_DRAWN = re.compile(r"ingested since (\S+?)(?: and before (\S+?))?,")
+STRATA = ("passed", "rejected")
 
 
 @dataclass(frozen=True)
@@ -83,11 +96,54 @@ def population(conn: sqlite3.Connection, ingested_since: str,
     return [(int(r["listing_id"]), int(r["snapshot_id"])) for r in rows]
 
 
+def strata(conn: sqlite3.Connection, ingested_since: str,
+           ingested_before: str | None = None) -> dict[int, str]:
+    """``passed`` or ``rejected`` for every listing in ``population``: passed when
+    any of its sightings in the window passed the filters."""
+    rows = conn.execute(
+        """
+        SELECT si.listing_id, MAX(si.passed_filter) AS passed
+        FROM sightings si
+        JOIN run_queries q ON q.id = si.run_query_id
+        JOIN runs r ON r.id = q.run_id
+        WHERE r.ingested_at >= :since AND (:before IS NULL OR r.ingested_at < :before)
+        GROUP BY si.listing_id
+        """,
+        {"since": ingested_since, "before": ingested_before},
+    ).fetchall()
+    return {int(r["listing_id"]): STRATA[0] if r["passed"] else STRATA[1] for r in rows}
+
+
+def parse_strata(spec: str) -> dict[str, int]:
+    """``passed=20,rejected=10`` -> size per stratum, in ``STRATA`` order."""
+    sizes: dict[str, int] = {}
+    for part in spec.split(","):
+        name, sep, value = part.partition("=")
+        name = name.strip()
+        if not sep or name not in STRATA or name in sizes:
+            raise ValueError(f"--strata takes {'=N,'.join(STRATA)}=N; got {spec!r}")
+        if not value.strip().isdigit() or int(value) < 1:
+            raise ValueError(f"--strata size for {name} must be a positive integer")
+        sizes[name] = int(value)
+    return {s: sizes[s] for s in STRATA if s in sizes}
+
+
+def sheet_window(meta: dict[str, str]) -> tuple[str, str | None]:
+    """The window a sheet was drawn from, read back from its ``# drawn:`` line."""
+    match = _DRAWN.search(meta.get("drawn", ""))
+    if not match:
+        raise FormatError("the sheet has no '# drawn: ... ingested since ...,' header line")
+    return match.group(1), match.group(2)
+
+
 def sample_name_used(conn: sqlite3.Connection, name: str) -> bool:
-    """Whether labels already carry this sample name. ``dme label`` keys a sheet's
-    batch on its name, so a reused name would make the new sheet a silent no-op."""
-    return conn.execute("SELECT 1 FROM labels WHERE sample = ? LIMIT 1",
-                        (name,)).fetchone() is not None
+    """Whether labels already carry this sample name, alone or as ``<name>/<stratum>``.
+    ``dme label`` keys a sheet's batch on its name, so a reused name would make the
+    new sheet a silent no-op."""
+    return conn.execute(
+        "SELECT 1 FROM labels WHERE sample = ? OR substr(sample, 1, ?) = ? LIMIT 1",
+        (name, len(name) + 1, f"{name}/"),
+    ).fetchone() is not None
 
 
 def sheet_header(path: Path) -> dict[str, str]:
@@ -155,9 +211,37 @@ def draw(conn: sqlite3.Connection, ingested_since: str, size: int,
     return [SampleItem(lid, sid, listing_view(conn, sid)) for lid, sid in picked]
 
 
+def draw_stratified(conn: sqlite3.Connection, ingested_since: str, ingested_before: str,
+                    sizes: dict[str, int], seed: int, exclude: frozenset[int] = frozenset(),
+                    ) -> tuple[list[SampleItem], dict[str, int]]:
+    """A seeded simple random sample within each stratum of a closed window, less
+    ``exclude``, shuffled together so a sheet's order shows no stratum. Returns the
+    items and each drawn stratum's size after the exclusions. The window must be
+    closed: ``dme label`` recomputes the strata from it, and a later run would move
+    listings between them."""
+    of = strata(conn, ingested_since, ingested_before)
+    snapshot = dict(population(conn, ingested_since, ingested_before))
+    rng = random.Random(seed)
+    picked: list[tuple[int, int]] = []
+    frames: dict[str, int] = {}
+    for stratum, size in sizes.items():
+        pool = sorted((lid, snapshot[lid]) for lid, s in of.items()
+                      if s == stratum and lid not in exclude)
+        if size > len(pool):
+            raise ValueError(f"{stratum} stratum size {size} exceeds its population "
+                             f"of {len(pool)}")
+        frames[stratum] = len(pool)
+        picked += rng.sample(pool, size)
+    rng.shuffle(picked)
+    return [SampleItem(lid, sid, listing_view(conn, sid)) for lid, sid in picked], frames
+
+
 def write_sheet(items: list[SampleItem], path: Path, *, name: str, decision_point: str,
                 rubric_version: str, question: str, since: str, seed: int,
-                population_size: int, excluded: int = 0, until: str | None = None) -> None:
+                population_size: int, excluded: int = 0, until: str | None = None,
+                strata_drawn: dict[str, tuple[int, int]] | None = None) -> None:
+    """``strata_drawn`` maps a stratified sheet's strata to (drawn, stratum size);
+    the header gives these totals only, never an entry's stratum."""
     window = f"since {since}" + (f" and before {until}" if until else "")
     drawn = (f"# drawn: {len(items)} of {population_size} listings sighted by runs "
              f"ingested {window}, seed {seed}")
@@ -169,6 +253,11 @@ def write_sheet(items: list[SampleItem], path: Path, *, name: str, decision_poin
         f"# rubric_version: {rubric_version}",
         f"# question: {question}",
         drawn,
+    ]
+    if strata_drawn:
+        header.append("# strata: " + ", ".join(
+            f"{s} {n} of {size}" for s, (n, size) in strata_drawn.items()))
+    header += [
         f"# Answer y or n after each '{decision_point}:'; 'note:' is optional.",
         "# Label from the listing lines alone - no JD, no model output.",
         "",
@@ -247,17 +336,29 @@ def sheet_batch(name: str, decision_point: str, labeler: str) -> dict[str, Any]:
 
 
 def sheet_records(meta: dict[str, str], entries: list[SheetEntry], *, labeler: str,
-                  rubric_version: str | None) -> list[dict[str, Any]]:
+                  rubric_version: str | None,
+                  strata_of: dict[int, str] | None = None) -> list[dict[str, Any]]:
     """A ``dme record`` annotations file for a filled sheet. The labels record
-    ``saw_model_output: false`` - the sheet never shows model output."""
+    ``saw_model_output: false`` - the sheet never shows model output. A stratified
+    sheet needs ``strata_of`` (``strata`` over the sheet's window), and each label's
+    sample is ``<name>/<stratum>``; the batch stays keyed on the sheet's name."""
     name, point = meta["sample"], meta["decision_point"]
+    stratified = "strata" in meta
+    if stratified and strata_of is None:
+        raise ValueError(f"sheet {name} is stratified; its labels need the window's strata")
     records: list[dict[str, Any]] = [sheet_batch(name, point, labeler)]
     for entry in entries:
+        sample = name
+        if stratified:
+            stratum = (strata_of or {}).get(entry.listing_id)
+            if stratum is None:
+                raise ValueError(f"L{entry.listing_id} is not in the sheet's window")
+            sample = f"{name}/{stratum}"
         record: dict[str, Any] = {
             "type": "label", "listing": {"listing_id": entry.listing_id},
             "snapshot_id": entry.snapshot_id, "decision_point": point,
             "labeler": labeler, "value": entry.answer, "saw_model_output": False,
-            "sample": name,
+            "sample": sample,
         }
         if rubric_version:
             record["rubric_version"] = rubric_version

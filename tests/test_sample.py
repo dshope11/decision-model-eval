@@ -16,18 +16,23 @@ from decision_model_eval.record import record_file
 from decision_model_eval.sample import (
     already_sampled,
     draw,
+    draw_stratified,
     parse_sheet,
+    parse_strata,
     population,
     resolve_rubric,
     sample_name_used,
     sheet_header,
     sheet_listing_ids,
     sheet_records,
+    sheet_window,
+    strata,
     write_sheet,
 )
 
 LAST_WEEK = "2026-09-26T20:00:00Z"
 TONIGHT = "2026-10-03T20:00:00Z"
+CLOSED = "2026-10-04T00:00:00Z"
 
 
 def ingest_at(conn: sqlite3.Connection, path: Path, ingested_at: str) -> None:
@@ -242,3 +247,126 @@ def test_unsure_marks_and_lines_below_the_answer_are_kept(
         (False, "location; explore: what is a GTM role"),
         (False, "unsure"),
     ]
+
+
+def test_strata_split_the_window_by_filter_verdict(tonight: sqlite3.Connection) -> None:
+    of = strata(tonight, TONIGHT, CLOSED)
+    assert set(of) == {lid for lid, _ in population(tonight, TONIGHT, CLOSED)}
+    assert sorted(of.values()).count("passed") == 6  # Role 4-9; Role 0-3 are rejects
+    assert sorted(of.values()).count("rejected") == 4
+
+
+def test_a_listing_that_passed_in_any_sighting_is_passed(
+    conn: sqlite3.Connection, write_jsonl: WriteJsonl,
+) -> None:
+    ingest_at(conn, write_jsonl(run_header(run_uuid="a"),
+                                hit(source_key="x", passed_filter=False,
+                                    filter_reason="not US or remote")), TONIGHT)
+    ingest_at(conn, write_jsonl(run_header(run_uuid="b"), hit(source_key="x")), TONIGHT)
+    assert list(strata(conn, TONIGHT, CLOSED).values()) == ["passed"]
+
+
+def test_strata_spec_is_parsed_and_checked() -> None:
+    assert parse_strata("rejected=10,passed=20") == {"passed": 20, "rejected": 10}
+    assert parse_strata("passed=5") == {"passed": 5}
+    for bad in ("passed=20,passed=3", "kept=5", "passed", "passed=0", "passed=x"):
+        with pytest.raises(ValueError):
+            parse_strata(bad)
+
+
+def test_stratified_draw_is_reproducible_and_fills_each_stratum(
+    tonight: sqlite3.Connection,
+) -> None:
+    sizes = {"passed": 3, "rejected": 2}
+    items, frames = draw_stratified(tonight, TONIGHT, CLOSED, sizes, seed=42)
+    assert (items, frames) == draw_stratified(tonight, TONIGHT, CLOSED, sizes, seed=42)
+    assert frames == {"passed": 6, "rejected": 4}
+    of = strata(tonight, TONIGHT, CLOSED)
+    drawn = [of[item.listing_id] for item in items]
+    assert drawn.count("passed") == 3 and drawn.count("rejected") == 2
+
+
+def test_stratified_draw_skips_excluded_and_refuses_an_overfull_stratum(
+    tonight: sqlite3.Connection,
+) -> None:
+    rejects = {lid for lid, s in strata(tonight, TONIGHT, CLOSED).items() if s == "rejected"}
+    gone = frozenset(sorted(rejects)[:2])
+    items, frames = draw_stratified(tonight, TONIGHT, CLOSED, {"rejected": 2}, seed=1,
+                                    exclude=gone)
+    assert frames == {"rejected": 2}
+    assert gone.isdisjoint(item.listing_id for item in items)
+    with pytest.raises(ValueError, match="rejected stratum size 3 exceeds its population of 2"):
+        draw_stratified(tonight, TONIGHT, CLOSED, {"rejected": 3}, seed=1, exclude=gone)
+
+
+def make_stratified_sheet(conn: sqlite3.Connection, path: Path) -> Path:
+    sizes = {"passed": 3, "rejected": 2}
+    items, frames = draw_stratified(conn, TONIGHT, CLOSED, sizes, seed=7)
+    write_sheet(items, path, name="blind-2026-W43", decision_point="D1",
+                rubric_version="d1-v2", question="Worth reading the full JD? (y / n)",
+                since=TONIGHT, until=CLOSED, seed=7,
+                population_size=len(population(conn, TONIGHT, CLOSED)),
+                strata_drawn={s: (n, frames[s]) for s, n in sizes.items()})
+    return path
+
+
+def test_stratified_sheet_shows_totals_only_and_labels_name_the_stratum(
+    tonight: sqlite3.Connection, tmp_path: Path, write_jsonl: WriteJsonl,
+) -> None:
+    sheet = make_stratified_sheet(tonight, tmp_path / "sheet.txt")
+    text = sheet.read_text()
+    assert "# strata: passed 3 of 6, rejected 2 of 4" in text
+    assert "not US or remote" not in text
+    assert text.count("passed") == 1 and text.count("rejected") == 1  # header only
+    fill_all(sheet)
+    meta, entries = parse_sheet(sheet)
+    assert sheet_window(meta) == (TONIGHT, CLOSED)
+    with pytest.raises(ValueError, match="is stratified"):
+        sheet_records(meta, entries, labeler="david", rubric_version=None)
+    of = strata(tonight, *sheet_window(meta))
+    records = sheet_records(meta, entries, labeler="david", rubric_version=None,
+                            strata_of=of)
+    assert {r["sample"] for r in records[1:]} == {"blind-2026-W43/passed",
+                                                  "blind-2026-W43/rejected"}
+    assert records[0] == sheet_records(meta, entries, labeler="david", rubric_version=None,
+                                       strata_of=of)[0]  # batch keyed on the sheet's name
+    assert not sample_name_used(tonight, "blind-2026-W43")
+    record_file(tonight, write_jsonl(*records))
+    assert sample_name_used(tonight, "blind-2026-W43")
+    assert not sample_name_used(tonight, "blind-2026-W4")  # a prefix is not a match
+    assert already_sampled(tonight, "D1") == sheet_listing_ids(sheet)
+
+
+def test_plain_sheet_has_no_strata_and_records_the_bare_name(
+    tonight: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    sheet = fill_all(make_sheet(tonight, tmp_path / "sheet.txt"))
+    assert "# strata:" not in sheet.read_text()
+    meta, entries = parse_sheet(sheet)
+    records = sheet_records(meta, entries, labeler="david", rubric_version=None,
+                            strata_of={})
+    assert {r["sample"] for r in records[1:]} == {"blind-2026-W40"}
+
+
+def test_cli_stratified_draw_and_label(tonight: sqlite3.Connection, tmp_path: Path) -> None:
+    tonight.commit()
+    config = tmp_path / "config.yaml"
+    config.write_text(f"db_path: {tmp_path / 'store' / 'listings.db'}\n"
+                      f"backup_dir: {tmp_path / 'backups'}\n")
+    samples = tmp_path / "samples"
+    samples.mkdir()
+
+    def sample(name: str, out: str, *extra: str) -> int:
+        return main(["--config", str(config), "sample", "--since", TONIGHT, "--name", name,
+                     "--out", str(samples / out), *extra])
+
+    assert sample("w", "w.txt", "--strata", "passed=3,rejected=2") == 1  # no --until
+    assert sample("w", "w.txt", "--until", CLOSED, "--strata", "passed=3",
+                  "--size", "3") == 1
+    assert sample("w/x", "w.txt", "--until", CLOSED, "--size", "3") == 1
+    assert not (samples / "w.txt").exists()
+    assert sample("w", "w.txt", "--until", CLOSED, "--strata", "passed=3,rejected=2") == 0
+    sheet = fill_all(samples / "w.txt")
+    assert main(["--config", str(config), "label", str(sheet), "--labeler", "david"]) == 0
+    rows = tonight.execute("SELECT sample, COUNT(*) AS n FROM labels GROUP BY sample")
+    assert {r["sample"]: r["n"] for r in rows} == {"w/passed": 3, "w/rejected": 2}

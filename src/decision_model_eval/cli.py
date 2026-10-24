@@ -9,10 +9,13 @@
                                       ask a decision log's inputs again, against any
                                       backend, into a new log
     dme sample --since TIMESTAMP [--until TIMESTAMP] --name NAME --out SHEET [--size 30]
-               [--seed N] [--exclude SHEET ...] [--include-sampled]
+               [--strata passed=N,rejected=M] [--seed N] [--exclude SHEET ...]
+               [--include-sampled]
                                       seeded blind draw, written as a label sheet;
                                       listings already labeled in a sample, or on a
-                                      sheet beside SHEET, are skipped
+                                      sheet beside SHEET, are skipped; --strata draws
+                                      filter passers and rejects separately (needs
+                                      --until) and labels record the stratum
     dme label SHEET --labeler NAME [--rubric-version V]
                                       record a filled label sheet - a D1 sheet or a
                                       D2+D5 JD sheet; the rubric comes from the sheet
@@ -56,13 +59,17 @@ from decision_model_eval.replay import replay
 from decision_model_eval.sample import (
     already_sampled,
     draw,
+    draw_stratified,
     parse_sheet,
+    parse_strata,
     population,
     resolve_rubric,
     sample_name_used,
     sheet_header,
     sheet_listing_ids,
     sheet_records,
+    sheet_window,
+    strata,
     write_sheet,
 )
 from decision_model_eval.store import backup, connect, schema_version
@@ -156,6 +163,14 @@ def _sample(config: EvalConfig, args: argparse.Namespace) -> int:
         raise ValueError(f"{out} exists; a drawn sheet is never overwritten")
     if args.decision_point not in QUESTIONS:
         raise ValueError(f"no question defined for decision point {args.decision_point!r}")
+    if "/" in args.name:
+        raise ValueError("a sample name cannot contain '/'; labels use it to name a stratum")
+    sizes = parse_strata(args.strata) if args.strata else None
+    if sizes and args.size is not None:
+        raise ValueError("--strata sets the sizes; drop --size")
+    if sizes and not args.until:
+        raise ValueError("--strata needs --until: dme label recomputes the strata from "
+                         "the window, so it must be closed")
     conn = _open(config)
     since = timestamp(args.since, 0, "--since")
     until = timestamp(args.until, 0, "--until") if args.until else None
@@ -177,13 +192,22 @@ def _sample(config: EvalConfig, args: argparse.Namespace) -> int:
     for sheet in args.exclude:
         exclude |= sheet_listing_ids(Path(sheet))
     excluded = len(pool & exclude)
-    items = draw(conn, since, args.size, seed, frozenset(exclude), until)
+    strata_drawn = None
+    if sizes:
+        assert until is not None
+        items, frames = draw_stratified(conn, since, until, sizes, seed, frozenset(exclude))
+        strata_drawn = {s: (n, frames[s]) for s, n in sizes.items()}
+    else:
+        items = draw(conn, since, args.size or 30, seed, frozenset(exclude), until)
     write_sheet(items, out, name=args.name, decision_point=args.decision_point,
                 rubric_version=RUBRICS[args.decision_point],
                 question=QUESTIONS[args.decision_point], since=since, seed=seed,
-                population_size=len(pool) - excluded, excluded=excluded, until=until)
+                population_size=len(pool) - excluded, excluded=excluded, until=until,
+                strata_drawn=strata_drawn)
+    by_stratum = ("; " + ", ".join(f"{s} {n} of {size}" for s, (n, size)
+                                    in strata_drawn.items())) if strata_drawn else ""
     print(f"{out}: {len(items)} listings drawn (seed {seed}, "
-          f"{excluded} already sampled excluded)")
+          f"{excluded} already sampled excluded{by_stratum})")
     return 0
 
 
@@ -193,16 +217,24 @@ def _label(config: EvalConfig, args: argparse.Namespace) -> int:
     if header.get("decision_point") == JD_SHEET_POINT:
         return _label_jd_sheet(config, args, sheet, header)
     meta, entries = parse_sheet(sheet)
+    conn = _open(config)
+    strata_of = strata(conn, *sheet_window(meta)) if "strata" in meta else None
     records = sheet_records(meta, entries, labeler=args.labeler,
-                            rubric_version=resolve_rubric(meta, args.rubric_version))
+                            rubric_version=resolve_rubric(meta, args.rubric_version),
+                            strata_of=strata_of)
     path = sheet.with_suffix(".labels.jsonl")
     path.write_text("".join(json.dumps(r) + "\n" for r in records))
-    result = record_file(_open(config), path)
+    result = record_file(conn, path)
     if result.already_recorded:
         print(f"{sheet}: already recorded (batch {result.batch_uuid}) - skipped")
     else:
         yes = sum(e.answer for e in entries)
         print(f"{sheet}: {result.labels} labels recorded ({yes} y, {len(entries) - yes} n)")
+        if strata_of is not None:
+            for stratum in sorted({strata_of[e.listing_id] for e in entries}):
+                mine = [e for e in entries if strata_of[e.listing_id] == stratum]
+                print(f"  {meta['sample']}/{stratum}: {len(mine)} labels, "
+                      f"{sum(e.answer for e in mine)} y")
     return 0
 
 
@@ -357,7 +389,10 @@ def build_parser() -> argparse.ArgumentParser:
     sample.add_argument("--name", required=True,
                         help="sample name, e.g. blind-2026-W40; must be new")
     sample.add_argument("--out", required=True, help="sheet to write; never overwritten")
-    sample.add_argument("--size", type=int, default=30)
+    sample.add_argument("--size", type=int, help="plain draw size (default 30)")
+    sample.add_argument("--strata", metavar="passed=N,rejected=M",
+                        help="draw filter passers and rejects separately, shuffled into "
+                             "one sheet; needs --until")
     sample.add_argument("--seed", type=int, help="defaults to random_seed in config.yaml")
     sample.add_argument("--decision-point", default="D1")
     sample.add_argument("--exclude", action="append", default=[], metavar="SHEET",

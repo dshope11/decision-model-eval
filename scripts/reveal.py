@@ -23,7 +23,8 @@ sets David's D5, gates and gaps against the pipeline's JD read of the same listi
 (the run's own, or a post-reveal one). The pipeline records a tier and its gaps,
 not per-gate verdicts, so D2 is compared only as "a gate killed it" (any gate fail
 of his vs the pipeline's Drop). His D5 scale is very-high / high / medium / drop,
-and the pipeline's Low and Drop both count as drop. Agreement counts only rows read
+and the pipeline's Low and Drop both count as drop; from d2-v3 his scale has low,
+which the pipeline's Low matches. Agreement counts only rows read
 under one rubric version and labels that saw no model output ([rev]).
 """
 import argparse
@@ -40,7 +41,9 @@ READ_TIERS = {"Very High", "High", "Medium"}
 # The pipeline's tiers on David's JD-sheet D5 scale; Low and Drop are both "drop".
 PIPELINE_D5 = {"Very High": "very-high", "High": "high", "Medium": "medium",
                "Low": "drop", "Drop": "drop"}
+NO_LOW = {"d2-v1", "d2-v2"}  # rubrics whose labeler scale has no low
 HIGH_PLUS = {"very-high", "high"}
+EMPTY_GAPS = {"-", "none"}  # stored as items before the parser learned they mean empty
 _DRAWN = re.compile(r"since (\S+?)(?: and before (\S+?))?,")
 _ENTRY = re.compile(r"^\[(\d+)\] L(\d+) S(\d+)$")
 # Disagreements first, then agreements on y.
@@ -161,12 +164,19 @@ def jd_section(items: list[dict], mine: dict[int, dict]) -> list[str]:
     and labels that saw no model output."""
     rows = []
     for i in sorted((i for i in items if i["lid"] in mine), key=lambda i: i["k"]):
-        me, jd = mine[i["lid"]], i["jd_dec"]
+        me, jd, post_reveal = mine[i["lid"]], i["jd_dec"], i["post_reveal"]
+        # The run's read under another rubric gives way to a post-reveal read under his.
+        post = i["jd_post"]
+        if (jd is None or jd.get("_rubric") != me["rubric"]) and post \
+                and post.get("_rubric") == me["rubric"]:
+            jd, post_reveal = post, True
         gates, killed = gate_summary(me["gates"])
         pipe = PIPELINE_D5.get(jd["tier"]) if jd else None
+        if jd and jd["tier"] == "Low" and me["rubric"] not in NO_LOW:
+            pipe = "low"
         same = jd is not None and jd.get("_rubric") == me["rubric"]
         rows.append({**i, "me": me, "gates": gates, "killed": killed, "pipe_d5": pipe,
-                     "same": same})
+                     "same": same, "jd_dec": jd, "post_reveal": post_reveal})
 
     def counts(group: list[dict]) -> list[str]:
         d5 = [r for r in group if r["same"] and "D5" not in r["me"]["rev"]]
@@ -179,8 +189,9 @@ def jd_section(items: list[dict], mine: dict[int, dict]) -> list[str]:
                 and not any(p.startswith("D2.") for p in r["me"]["rev"])]
         kill_agree = sum(r["killed"] == (r["jd_dec"]["tier"] == "Drop") for r in kill)
         gapped = [r for r in d5 if r["me"].get("gaps") and r["jd_dec"].get("gaps")]
-        gap_agree = sum(len(r["me"]["gaps"].get("core", []))
-                        == len(r["jd_dec"]["gaps"].get("core", [])) for r in gapped)
+        def core(gaps: dict) -> int:
+            return sum(g.strip().lower() not in EMPTY_GAPS for g in gaps.get("core", []))
+        gap_agree = sum(core(r["me"]["gaps"]) == core(r["jd_dec"]["gaps"]) for r in gapped)
         return [f"D5 exact {exact}/{len(d5)}",
                 f"High or above {hi_agree}/{len(d5)} (you only {you_only}, "
                 f"pipeline only {pipe_only})",
@@ -291,12 +302,13 @@ def main() -> None:
                 line = decision(conn, lid, "listing-line", "d.batch_id IN (SELECT id FROM "
                                 "record_batches WHERE recorded_at < ?)", since)
                 earlier = line is not None
+        # A JD read after the reveal (Phase 3 step 0), in a later batch but before
+        # the next run - the pipeline would not have read it on its own.
+        jd_post = decision(conn, lid, "jd-verified", "d.batch_id IN (SELECT id FROM "
+                           "record_batches WHERE recorded_at > ? AND recorded_at < ?)",
+                           labels_at, next_run)
         if jd is None:
-            # A JD read after the reveal (Phase 3 step 0), in a later batch but before
-            # the next run - the pipeline would not have read it on its own.
-            jd = decision(conn, lid, "jd-verified", "d.batch_id IN (SELECT id FROM "
-                          "record_batches WHERE recorded_at > ? AND recorded_at < ?)",
-                          labels_at, next_run)
+            jd = jd_post
             post_reveal = jd is not None
         if not passed:
             at_line = f"filter reject: {reason}"
@@ -318,6 +330,7 @@ def main() -> None:
             "passed": passed,
             "lid": lid,
             "jd_dec": jd,
+            "jd_post": jd_post,
             "post_reveal": post_reveal,
             "stratum": la["sample"].partition("/")[2],
             "note": la["note"],

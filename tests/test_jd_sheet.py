@@ -165,6 +165,21 @@ def test_d2_v2_reads_gaps_and_cap_medium_and_skips_reprinted_criteria(
     assert second.labels[-3].value == {"core": [], "context": []}
 
 
+def test_d2_v3_takes_low_and_reads_dash_or_none_as_an_empty_list(
+    store: sqlite3.Connection, tmp_path: Path,
+) -> None:
+    sheet = (SHEET_V2.replace("# rubric_version: d2-v2", "# rubric_version: d2-v3")
+             .replace("gaps: core= | context=", "gaps: core= - | context= none")
+             .replace("    D5: high\n", "    D5: low\n"))
+    _, second = parse_jd_sheet(write_sheet(store, tmp_path / "s.txt", sheet), "d2-v3")
+    labels = {label.decision_point: label for label in second.labels}
+    assert labels["D5.gaps"].value == {"core": [], "context": []}
+    assert labels["D5"].value == "low"
+    with pytest.raises(FormatError):
+        parse_jd_sheet(write_sheet(store, tmp_path / "s.txt", sheet.replace(
+            "# rubric_version: d2-v3", "# rubric_version: d2-v2")), "d2-v2")
+
+
 def test_d2_v2_needs_a_gaps_line_and_d2_v1_never_reads_one(
     store: sqlite3.Connection, tmp_path: Path,
 ) -> None:

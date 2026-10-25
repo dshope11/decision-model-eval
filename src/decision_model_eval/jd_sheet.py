@@ -29,9 +29,9 @@ decision point ``decide()`` uses for that gate) whose value is an object - ``gat
 ``verdict``, any fields, and ``unsure`` / ``pref_only`` / ``ext_fail`` when the
 line says so (``?``, ``pref-only``, ``| ext-fail: <text>``) - with the comment after
 the verdict as its note. D5 and D1-check become labels whose value is the answer.
-Under a rubric with gap counting (``d2-v2``), the ``gaps:`` line, fields only, is
+Under a rubric with gap counting (``d2-v2`` on), the ``gaps:`` line, fields only, is
 required and becomes a ``D5.gaps`` label: the meaningful gaps the tier was counted
-from. The note, off-rubric and any other line go to the D5 note, and an
+from. In any list field, ``-`` or ``none`` means the list is empty. The note, off-rubric and any other line go to the D5 note, and an
 ``opened-link`` line to the note of every label of its entry, since the whole entry
 was judged with the live posting open. ``#`` lines are never answers, wherever they
 are, so a sheet can reprint the rubric's criteria inside every entry.
@@ -75,7 +75,16 @@ RUBRICS: dict[str, JdRubric] = {
                       list_fields=frozenset({"held", "not", "core", "context"}),
                       tiers=("very-high", "high", "medium", "drop"),
                       d1_checks=("y", "n", "partly"), gaps=True),
+    # G5 becomes a general domain wall (a gate's wording, so no format change) and the
+    # labeler's D5 scale gains low.
+    "d2-v3": JdRubric(gates=7, verdicts=("pass", "fail", "tier-drop", "cap-medium"),
+                      list_fields=frozenset({"held", "not", "core", "context"}),
+                      tiers=("very-high", "high", "medium", "low", "drop"),
+                      d1_checks=("y", "n", "partly"), gaps=True),
 }
+
+# A list field written as "-" or "none" is empty, not one item named "-".
+_EMPTY_ITEMS = {"-", "none"}
 
 
 @dataclass(frozen=True)
@@ -181,7 +190,8 @@ def _gate(name: str, text: str, rubric: JdRubric, where: str) -> tuple[dict[str,
             trailing, region = region[verdict_at.start():], region[:verdict_at.start()]
         region = region.strip().strip("|").strip()
         if key in rubric.list_fields:
-            fields[key] = [item.strip() for item in region.split(",") if item.strip()]
+            fields[key] = [item.strip() for item in region.split(",")
+                           if item.strip() and item.strip().lower() not in _EMPTY_ITEMS]
         elif not region:
             raise FormatError(f"{where}: field {key!r} has no value")
         elif following is not None:

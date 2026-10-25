@@ -1,7 +1,8 @@
-"""Turn a fetched JD (iCIMS page with ld+json, or SmartRecruiters / Greenhouse / Ashby posting
-JSON) into plain text. For Ashby, IN_FILE is the one job object from the posting API's board.
+"""Turn a fetched JD (iCIMS page with ld+json, or SmartRecruiters / Greenhouse / Ashby / Amazon
+posting JSON) into plain text. For Ashby, IN_FILE is the one job object from the posting API's
+board; for Amazon, the one job object from amazon.jobs search.json (its job page has no ld+json).
 
-Usage: python3 -I jd_to_text.py icims|smartrecruiters|greenhouse|ashby IN_FILE OUT_FILE URL FETCHED_DATE
+Usage: python3 -I jd_to_text.py icims|smartrecruiters|greenhouse|ashby|amazon IN_FILE OUT_FILE URL FETCHED_DATE
 
 The raw response stays in jd/raw/ so the text can be regenerated after the posting is gone.
 """
@@ -57,6 +58,12 @@ def main():
         d = json.loads(raw)
         head = f"{d.get('title')} :: {d.get('location')}"
         body = to_text(d["descriptionHtml"])
+    elif kind == "amazon":
+        d = json.loads(raw)
+        head = f"{d.get('title')} :: {d.get('normalized_location')}"
+        sections = [("Description", "description"), ("Basic Qualifications", "basic_qualifications"),
+                    ("Preferred Qualifications", "preferred_qualifications")]
+        body = "\n\n".join(f"## {name}\n\n{to_text(d[key])}" for name, key in sections if d.get(key))
     else:
         d = json.loads(raw)
         head = f"{d.get('name')} :: {d.get('location', {}).get('fullLocation')}"
